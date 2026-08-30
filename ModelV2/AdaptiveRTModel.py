@@ -4,17 +4,17 @@ from sklearn.ensemble import IsolationForest
 from collections import deque
 
 features = ["temperature_c","humidity_pct","pressure_hpa"]
-contamination = 0.65
+contamination = 0.065
 z_threshold = 3.0
 rolling_window = 30
 refit_n = 200
 retrain_window = 1000
 
-training_df = pd.read_csv("TestAnomalyUnlabled.csv")
+#training_df = pd.read_csv("./ModelV2/TestAnomalyUnlabled.csv")
 
-def baseline_model(traing_df):
+def baseline_model(training_df):
     model = IsolationForest(contamination=contamination,random_state=42)
-    model.fit(traing_df[features])
+    model.fit(training_df[features])
     return model
 
 class RollingZScore:
@@ -26,9 +26,9 @@ class RollingZScore:
         z_scores={}
         for f in features:
             buf = self.buffers[f]
-            if(len(buf)>5):
+            if(len(buf)>=5):
                 mean = np.mean(buf)
-                std = np.std(buf)
+                std = np.std(buf) or 1e-6
                 z_scores[f] = (row[f]-mean)/std
             else:
                 z_scores[f]=0.0
@@ -36,7 +36,7 @@ class RollingZScore:
         return z_scores
 
 def detect_anomaly(row: dict,model,roller:RollingZScore):
-    x=np.array([[row[f] for f in features]])
+    x = pd.DataFrame([[row[f] for f in features]], columns=features)
 
     iforest_pred = model.predict(x)[0]
     iforest_score = model.decision_function(x)[0]
@@ -56,3 +56,20 @@ def detect_anomaly(row: dict,model,roller:RollingZScore):
         "zscore_max": z_scoremax,
         "z_flag": z_flag
     }
+
+class AdaptiveModel:
+    def __init__(self,initial_df):
+        self.model = baseline_model(initial_df)
+        self.buffer = deque(initial_df[features].to_dict("records"),maxlen=retrain_window)
+        self.count_since_refit = 0
+
+    def addnrefit(self,row: dict):
+        self.buffer.append({f: row[f] for f in features})
+        self.count_since_refit += 1
+
+        if self.count_since_refit>=refit_n:
+            self.model = baseline_model(pd.DataFrame(self.buffer))
+            self.count_since_refit = 0
+
+    def get_model(self):
+        return self.model
