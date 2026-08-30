@@ -3,14 +3,35 @@ import pandas as pd
 from sklearn.ensemble import IsolationForest
 from collections import deque
 
+# RT is Real-Time btw
+
+''' 
+learn about deque just a little. I used two parameters to detect anomaly here
+one is isolation forest flag (which is understandable) and
+another one is zscore flag to make it more effective but tbh idk it is good or nah.
+
+contamination is 0.065 just bcuz the testing csv was built by chatgpt and it selected that.
+
+refit_n is after how many new readings the model will retrain &
+retrain_window is on how much data the model will train on after every refit_n &
+rolling_window is mainly for deque to calculate zScore.
+
+this is just a basic RT model and it can be imported across files to get output as i did with 'Result1.py'
+
+***Things to be added***
+
+1. In features we can add temp,humidity & pressure change column.
+2. Enhancement of getting the model know that some readings can differ across a full day.
+    For example, 35`C is normal at 2pm and 25`C is also normal at 2am in the same day.For that ig we have to
+    retarin the model more often but retraining everyday will make the model make no sense ?? idk
+
+'''
 features = ["temperature_c","humidity_pct","pressure_hpa"]
 contamination = 0.065
 z_threshold = 3.0
 rolling_window = 30
 refit_n = 200
 retrain_window = 1000
-
-#training_df = pd.read_csv("./ModelV2/TestAnomalyUnlabled.csv")
 
 def baseline_model(training_df):
     model = IsolationForest(contamination=contamination,random_state=42)
