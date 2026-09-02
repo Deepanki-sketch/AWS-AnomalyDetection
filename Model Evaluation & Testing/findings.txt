@@ -1,0 +1,4 @@
+z thershold      contamination      realation iforest_flag  z_flag     precision    recall   detected  injected
+7                   0.01                    and                           1.00        0.235     12        51
+5                    0.01                   and                            1.00       0.294     15        51      
+3                     0.01                   and                            17.9      0.294     15        51     

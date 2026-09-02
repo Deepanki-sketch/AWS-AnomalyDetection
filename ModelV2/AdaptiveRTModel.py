@@ -27,8 +27,8 @@ this is just a basic RT model and it can be imported across files to get output 
 
 '''
 features = ["temperature_c","humidity_pct","pressure_hpa"]
-contamination = 0.03 
-z_threshold = 5.0
+contamination = 0.01 
+z_threshold = 3.0
 rolling_window = 30
 refit_n = 200
 retrain_window = 1000
@@ -67,7 +67,7 @@ def detect_anomaly(row: dict,model,roller:RollingZScore):
     z_scoremax = max(abs(v) for v in z_scores.values())
     z_flag = z_scoremax > z_threshold
 
-    is_anomaly = iforest_flag or z_flag
+    is_anomaly = iforest_flag and z_flag
 
     return{
         "timestamp": row.get("timestamp"),
