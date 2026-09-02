@@ -27,8 +27,8 @@ this is just a basic RT model and it can be imported across files to get output 
 
 '''
 features = ["temperature_c","humidity_pct","pressure_hpa"]
-contamination = 0.065
-z_threshold = 3.0
+contamination = 0.03 
+z_threshold = 5.0
 rolling_window = 30
 refit_n = 200
 retrain_window = 1000
