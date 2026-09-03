@@ -9,8 +9,8 @@ features = normal_features + features_change
 contamination = 0.03
 z_threshold = 3.0
 rolling_window = 30
-refit_n = 200
-retrain_window = 1000
+refit_n = 1000
+retrain_window = 2500
 
 def baseline_model(training_df):
     model = IsolationForest(contamination=contamination,random_state=42)
@@ -28,9 +28,43 @@ class TrackChanges:
                 changes[f"{f}_change"] = row[f] - self.prev[f]
             else:
                 changes[f"{f}_change"] = 0.0
-            self.prev = {f: row[f] for f in normal_features}
+
+        self.prev = {f: row[f] for f in normal_features}
         return changes
 
+class TrackFrozen:
+    def __init__(self,freeeze_count=6):
+        self.freeze_count = freeeze_count
+        self.prev_value = {f: None for f in normal_features}
+        self.repeat_count = {f: 0 for f in normal_features}
+
+    def check_frozen(self,row: dict):
+        frozen_flags = {}
+        for f in normal_features:
+            if self.prev_value is not None and row[f] == self.prev_value[f]:
+                self.repeat_count[f] += 1
+            else:
+                self.repeat_count[f] = 0
+                
+            frozen_flags[f] = self.repeat_count[f]>=self.freeze_count
+            self.prev_value[f]=row[f]
+
+        any_frozen = any(frozen_flags.values())
+        return any_frozen,frozen_flags
+
+class TrackDrift:
+    def __init__(self,baseline_df,drift_threshold = 4.0):
+        self.drift_threshold = drift_threshold
+        self.baseline_mean = {f: baseline_df[f].mean() for f in normal_features}
+        self.baseline_std = {f: baseline_df[f].std() for f in normal_features}
+
+    def check_drift(self,row: dict):
+        drift_flags = {}
+        for f in normal_features:
+            z = (row[f]-self.baseline_mean[f])/self.baseline_std[f]
+            drift_flags[f] = abs(z)>self.drift_threshold
+        any_drift = any(drift_flags.values())
+        return any_drift, drift_flags
 
 class RollingZScore:
     def __init__(self,window=rolling_window):
@@ -50,7 +84,7 @@ class RollingZScore:
             buf.append(row[f])
         return z_scores
 
-def detect_anomaly(row: dict,model,roller:RollingZScore):
+def detect_anomaly(row: dict,model,roller:RollingZScore,frozen: TrackFrozen,drift: TrackDrift):
     x = pd.DataFrame([[row[f] for f in features]], columns=features)
 
     iforest_pred = model.predict(x)[0]
@@ -61,7 +95,11 @@ def detect_anomaly(row: dict,model,roller:RollingZScore):
     z_scoremax = max(abs(v) for v in z_scores.values())
     z_flag = z_scoremax > z_threshold
 
-    is_anomaly = iforest_flag or z_flag
+    frozen_flag, frozen_details = frozen.check_frozen(row)
+
+    drift_flag, drift_details = drift.check_drift(row)
+
+    is_anomaly = iforest_flag and z_flag or frozen_flag or drift_flag
 
     return{
         "timestamp": row.get("timestamp"),
@@ -69,7 +107,9 @@ def detect_anomaly(row: dict,model,roller:RollingZScore):
         "iforest_score": iforest_score,
         "iforest_flag": iforest_flag,
         "zscore_max": z_scoremax,
-        "z_flag": z_flag
+        "z_flag": z_flag,
+        "frozen_flag": frozen_flag,
+        "drift_flag": drift_flag
     }
 
 class AdaptiveModel:
@@ -83,7 +123,7 @@ class AdaptiveModel:
         self.count_since_refit += 1
 
         if self.count_since_refit>=refit_n:
-            self.model = baseline_model(pd.DataFrame(self.buffer))
+            # self.model = baseline_model(pd.DataFrame(self.buffer))
             self.count_since_refit = 0
 
     def get_model(self):
