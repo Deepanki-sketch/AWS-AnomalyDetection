@@ -1,7 +1,7 @@
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from ModelV2.ART2.ARTModel2 import AdaptiveModel, RollingZScore, detect_anomaly, TrackChanges
+from ModelV2.ART2.ARTModel2 import AdaptiveModel, RollingZScore, detect_anomaly, TrackChanges, TrackFrozen, TrackDrift
 import numpy as np
 import pandas as pd
 from sklearn.metrics import confusion_matrix, precision_score, recall_score, f1_score
@@ -175,16 +175,29 @@ def evaluate(y_true, y_pred):
 
     return {"precision": precision, "recall": recall, "f1": f1, "confusion_matrix": cm}
 
+def evaluate_by_type(stream_df, y_pred):
+    print("\n--- Catch rate by anomaly type ---")
+    for atype in stream_df["anomaly_type"].unique():
+        if atype == "normal":
+            continue
+        mask = stream_df["anomaly_type"] == atype
+        total = mask.sum()
+        caught = int(np.sum(mask.values & (y_pred == 1)))
+        pct = (caught / total * 100) if total > 0 else 0.0
+        print(f"{atype:10s}: caught {caught}/{total} ({pct:.1f}%)")
 
 if __name__ == "__main__":
     csv_path = os.path.join(os.path.dirname(__file__), "AWS_Weather_5000_Clean.csv")
-    df = pd.read_csv(csv_path)
-    df = df.sort_values("timestamp").reset_index(drop=True)
+    csv_train = os.path.join(os.path.dirname(__file__), "AWS_Weather_5000_With_Anomalies.csv")
+    df1 = pd.read_csv(csv_path)
+    df1 = df1.sort_values("timestamp").reset_index(drop=True)
+    df2 = pd.read_csv(csv_train)
+    df2 = df1.sort_values("timestamp").reset_index(drop=True)
 
     # baseline_df -> first 1000 clean rows used to train the model
     # stream_df   -> remaining 4000 rows used for testing
-    baseline_df = df.iloc[:1000].copy().reset_index(drop=True)
-    stream_df_raw = df.iloc[1000:5000].copy().reset_index(drop=True)
+    baseline_df = df1
+    stream_df_raw = df2
 
     # ART2 needs the change features in the baseline before model creation
     baseline_df["temperature_c_change"] = baseline_df["temperature_c"].diff().fillna(0)
@@ -204,13 +217,15 @@ if __name__ == "__main__":
     adaptive = AdaptiveModel(baseline_df)
     roller = RollingZScore()
     trackchange = TrackChanges()
+    frozen = TrackFrozen()
+    drift = TrackDrift(baseline_df)
 
     results = []
     for _, row in stream_df.iterrows():
         row_dict = row.to_dict()
         changes = trackchange.compute_changes(row_dict)
         row_dict.update(changes)
-        result = detect_anomaly(row_dict, adaptive.get_model(), roller)
+        result = detect_anomaly(row_dict, adaptive.get_model(), roller, frozen, drift)
         results.append(result)
         adaptive.addnrefit(row_dict)
 
@@ -229,3 +244,4 @@ if __name__ == "__main__":
     print(f"Flagged {int(y_pred.sum())} rows as anomalies out of {len(y_pred)} total rows.")
 
     evaluate(y_true, y_pred)
+    evaluate_by_type(stream_df, y_pred)
