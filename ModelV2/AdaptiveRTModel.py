@@ -67,7 +67,7 @@ def detect_anomaly(row: dict,model,roller:RollingZScore):
     z_scoremax = max(abs(v) for v in z_scores.values())
     z_flag = z_scoremax > z_threshold
 
-    is_anomaly = iforest_flag and z_flag
+    is_anomaly = iforest_flag or z_flag
 
     return{
         "timestamp": row.get("timestamp"),
