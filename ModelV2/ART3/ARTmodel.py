@@ -1,7 +1,7 @@
-
+import os
 import pickle
 from collections import deque
-import os
+
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
@@ -285,5 +285,32 @@ class AdaptiveModel:
         self.total_refits=state["total_refits"]
 
     def reset_state(self):
+        if os.path.isfile(MODEL_STATE_PATH):
+            os.remove(MODEL_STATE_PATH)
+
+def get_model(self):
+        return self.model
+
+def save_state(self):
+        state={
+            "model":self.model,
+            "buffer":list(self.buffer),
+            "count_since_refit":self.count_since_refit,
+            "total_training_rows":self.total_training_rows,
+            "total_refits":self.total_refits
+        }
+        with open(MODEL_STATE_PATH,"wb") as f:
+            pickle.dump(state,f)
+
+def load_state(self):
+        with open(MODEL_STATE_PATH,"rb") as f:
+            state=pickle.load(f)
+        self.model=state["model"]
+        self.buffer=deque(state["buffer"],maxlen=RETRAIN_WINDOW)
+        self.count_since_refit=state["count_since_refit"]
+        self.total_training_rows=state["total_training_rows"]
+        self.total_refits=state["total_refits"]
+
+def reset_state(self):
         if os.path.isfile(MODEL_STATE_PATH):
             os.remove(MODEL_STATE_PATH)
