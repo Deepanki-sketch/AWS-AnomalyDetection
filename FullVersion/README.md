@@ -1,11 +1,11 @@
-# 🌦️ AI/ML Intelligent AWS Anomaly Detection System (SIH 2026)
+# AI/ML Intelligent AWS Anomaly Detection System (SIH 2026)
 
 > **Smart India Hackathon 2026 — Minimum Viable Product (MVP)**
 > Real-time intelligent anomaly detection for Automatic Weather Stations using **Temperature (°C)**, **Pressure (hPa)**, and **Relative Humidity (%)**.
 
 ---
 
-## 🚀 Key Highlights
+## Key Highlights
 * **Physics-Guided Hybrid AI**: Combines WMO-No. 8 standards, atmospheric thermodynamics (Magnus-Tetens Dew Point, Vapor Pressure Deficit), and Multivariate Machine Learning (Isolation Forest).
 * **Genuine Storms vs Sensor Faults**: Cleanly disentangles severe convective downbursts and cold fronts from sensor hardware failures, achieving **0% false alarm rate on genuine storm events**.
 * **Edge AI for ESP32**: Includes a zero-dependency C/C++ embedded library (`edge/esp32_anomaly_detector.h`) with $< 0.1\text{ ms}$ latency and $< 2\text{ KB}$ RAM footprint.
@@ -15,7 +15,7 @@
 
 ---
 
-## 🛠️ Project Structure
+## Project Structure
 ```
 ├── app.py                      # Interactive Streamlit Web Dashboard
 ├── main.py                     # CLI for streaming demo and CSV evaluation
@@ -40,7 +40,7 @@
 
 ---
 
-## ⚡ Quickstart
+## Quickstart
 
 ### 1. Launch the Web Dashboard
 ```bash
