@@ -4,7 +4,7 @@ import pandas as pd
 from sklearn.metrics import confusion_matrix,precision_score,recall_score,f1_score,accuracy_score
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__),'..'))
-from ModelV2.ART4.ART import AdaptiveModel,run_art3_pipeline,IF_CONTAMINATION, Z_THRESHOLD, ROLLING_WINDOW, REFIT_N, RETRAIN_WINDOW
+from ModelV2.ART4.ART import AdaptiveModel,TrackChanges,TrackDrift,TrackFrozen,run_art3_pipeline,IF_CONTAMINATION, Z_THRESHOLD, ROLLING_WINDOW, REFIT_N, RETRAIN_WINDOW
 
 DB_PATH=os.path.join(os.path.dirname(__file__),'experiment_log.db')
 XLSX_PATH=os.path.join(os.path.dirname(__file__),'experiment_log.xlsx')
@@ -163,6 +163,36 @@ def evaluate(y_true,y_pred):
         "tp":tp
     }
 
+def evaluate_by_type(ground_truth_df,predictions_df,label_column="anomaly_type",pred_column="is_anomaly"):
+    """
+    Prints a catch-rate breakdown per injected anomaly type (spike, frozen, drift, dropout, ...).
+    ground_truth_df: the 'test' dataframe (has is_anomaly + anomaly_type columns).
+    predictions_df:  the 'results' dataframe returned by run_art3_pipeline (concatenated across chunks).
+    Both must be row-aligned (same length, same order).
+    """
+    y_pred=predictions_df[pred_column].astype(int).to_numpy()
+
+    if len(ground_truth_df)!=len(predictions_df):
+        print(f"[evaluate_by_type] WARNING: length mismatch - ground_truth has {len(ground_truth_df)} rows, "
+              f"predictions has {len(predictions_df)} rows. Check row alignment before trusting these numbers.")
+
+    print("\n--- Catch rate by anomaly type ---")
+    if label_column not in ground_truth_df.columns:
+        print(f"[evaluate_by_type] No '{label_column}' column found - skipping per-type breakdown.")
+        return
+
+    for atype in ground_truth_df[label_column].unique():
+        if str(atype).lower() in ("normal","none"):
+            continue
+        mask=(ground_truth_df[label_column]==atype).to_numpy()
+        total=int(mask.sum())
+        if total==0:
+            continue
+        caught=int(np.sum(mask&(y_pred==1)))
+        pct=(caught/total*100) if total>0 else 0.0
+        print(f"{str(atype):10s}: caught {caught}/{total} ({pct:.1f}%)")
+
+
 def db():
     c=sqlite3.connect(DB_PATH)
     c.execute('''CREATE TABLE IF NOT EXISTS runs(run_id INTEGER PRIMARY KEY AUTOINCREMENT,run_timestamp TEXT,model_name TEXT,contamination REAL,z_threshold REAL,rolling_window INTEGER,refit_n INTEGER,retrain_window INTEGER,anomaly_config TEXT,n_injected INTEGER,n_flagged INTEGER,caught INTEGER,catch_pct REAL,accuracy REAL,precision_score REAL,recall_score REAL,f1_score REAL,true_negatives INTEGER,false_positives INTEGER,false_negatives INTEGER,true_positives INTEGER,training_rows INTEGER,total_refits INTEGER)''')
@@ -313,6 +343,7 @@ def main():
     print(f"Flagged {flagged} rows as anomalies out of {len(y_pred)} total rows.")
 
     metrics=evaluate(y_true,y_pred)
+    evaluate_by_type(test,results)
 
     print(f"\nART3 training rows accumulated: {adaptive.total_training_rows}")
     print(f"ART3 refits completed: {adaptive.total_refits}")
