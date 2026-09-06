@@ -37,6 +37,8 @@ from ART3.ARTmodel import (
     classify_triggers,
 )
 
+from root_cause_engine import RootCauseEngine
+
 
 # =========================================================
 # STREAM PROCESSOR
@@ -195,6 +197,10 @@ class StreamProcessor:
         # but rows are grouped into the configured batch size for display.
         self.live_batch_number = 0
         self.live_batch = None
+
+        # Root-cause diagnostic state mirrors the supplied Root_cause_3.py
+        # and is kept separate from ART3 detection state.
+        self.root_cause_engine = RootCauseEngine()
 
     # =====================================================
     # PROCESS NEXT SINGLE TELEMETRY READING
@@ -396,6 +402,19 @@ class StreamProcessor:
                 triggers = ["final_anomaly_decision"]
 
             # ---------------------------------------------
+            # Root-cause diagnosis
+            # ---------------------------------------------
+            root_cause = self.root_cause_engine.diagnose(
+                row_dict,
+                {
+                    **ml_result,
+                    "is_anomaly": is_anomaly,
+                    "iforest_flag": iforest_flag,
+                    "z_flag": ml_result["z_flag"],
+                }
+            )
+
+            # ---------------------------------------------
             # Preserve the dashboard-compatible result shape
             # while exposing ART3's additional information.
             # ---------------------------------------------
@@ -422,6 +441,28 @@ class StreamProcessor:
                 "spike_flags": spike_flags,
                 "drift_flags": drift_flags,
                 "triggers": triggers,
+                # Root-cause diagnosis from Root_cause_3.py
+                "root_cause": root_cause["root_cause"],
+                "affected_sensor": root_cause["affected_sensor"],
+                "confidence": root_cause["confidence"],
+                "severity": root_cause["severity"],
+                "diagnostic_evidence": root_cause["diagnostic_evidence"],
+                "recommended_action": root_cause["recommended_action"],
+                "temperature_change": root_cause["temperature_change"],
+                "humidity_change": root_cause["humidity_change"],
+                "pressure_change": root_cause["pressure_change"],
+                "temperature_spike": root_cause["temperature_spike"],
+                "humidity_spike": root_cause["humidity_spike"],
+                "pressure_spike": root_cause["pressure_spike"],
+                "dew_point_c": root_cause["dew_point_c"],
+                "dew_point_inconsistency": root_cause["dew_point_inconsistency"],
+                "communication_diagnostics": root_cause["communication"],
+                "root_cause_frozen_flags": root_cause["frozen_flags"],
+                "root_cause_drift_flags": root_cause["drift_flags"],
+                "root_cause_simultaneous_reversal": root_cause["simultaneous_reversal"],
+                "root_cause_exposure_issue": root_cause["possible_temperature_exposure_issue"],
+                "root_cause_condensation_issue": root_cause["possible_humidity_condensation_issue"],
+                "max_spike_ratio": root_cause["max_spike_ratio"],
             }
 
             self.results.append(result)
@@ -547,6 +588,10 @@ class StreamProcessor:
         self.last_anomaly = None
         self.live_batch_number = 0
         self.live_batch = None
+
+        # Root-cause diagnostic state mirrors the supplied Root_cause_3.py
+        # and is kept separate from ART3 detection state.
+        self.root_cause_engine = RootCauseEngine()
 
     # =====================================================
     # CHECK WHETHER PROCESSING IS FINISHED

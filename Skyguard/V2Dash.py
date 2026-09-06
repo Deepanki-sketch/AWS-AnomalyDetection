@@ -11,6 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
+
 st.markdown(
     """
     <style>
@@ -73,6 +74,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CLEAN_CSV_PATH = PROJECT_ROOT / "Model Evaluation & Testing" / "AWS_Weather_5000_Clean.csv"
 STREAM_CSV_PATH = PROJECT_ROOT / "ModelV2" / "ART3" / "AWS_Weather_5000_With_Anomalies.csv"
@@ -110,8 +112,6 @@ if "processor" not in st.session_state:
 
 if "visible_blocks" not in st.session_state:
 
-    # Number of newest batches shown in the live feed.
-    # Older batches are revealed with the bottom arrow.
     st.session_state.visible_blocks = 1
 
 
@@ -121,9 +121,15 @@ if "is_streaming" not in st.session_state:
 if "stream_speed" not in st.session_state:
     st.session_state.stream_speed = 0.6
 
+
 with st.sidebar:
 
     st.header("Live Telemetry")
+
+    st.caption(
+        "Simulated AWS telemetry from the anomaly dataset. "
+        "ART3 processes one reading at a time."
+    )
 
     live_col1, live_col2 = st.columns(2)
 
@@ -286,6 +292,7 @@ with st.sidebar:
     st.caption("Training: Clean AWS telemetry")
     st.caption("Detection Model: ART3")
 
+
 if apply_settings:
 
     try:
@@ -334,6 +341,7 @@ if reset_detection:
 
 processor = st.session_state.processor
 
+
 st.markdown(
     '<div class="main-title">SKYGUARD AI</div>',
     unsafe_allow_html=True
@@ -348,7 +356,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-
 st.markdown(
     '<div class="section-title">'
     'Live Processing Feed'
@@ -356,14 +363,12 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-
 if processor is None:
 
     st.info(
         "Press ▶ Start Stream to begin simulated live telemetry. "
         "The clean CSV trains ART3; the anomaly CSV is processed one reading at a time."
     )
-
 
 else:
 
@@ -487,6 +492,7 @@ else:
         )
 
     else:
+
         feed_container = st.container(
             height=520,
             border=True
@@ -691,6 +697,16 @@ else:
                                         f"{detector_text}"
                                     )
 
+                                    st.write(
+                                        f"**Root Cause:** "
+                                        f"{anomaly.get('root_cause', 'Not classified')}"
+                                    )
+
+                                    st.write(
+                                        f"**Affected Sensor:** "
+                                        f"{anomaly.get('affected_sensor', '—')}"
+                                    )
+
                                 with detail2:
 
                                     score = anomaly.get(
@@ -734,6 +750,16 @@ else:
                                         st.write(
                                             "**Maximum Z-Score:** —"
                                         )
+
+                                    st.write(
+                                        f"**Confidence:** "
+                                        f"{anomaly.get('confidence', '—')}"
+                                    )
+
+                                    st.write(
+                                        f"**Severity:** "
+                                        f"{anomaly.get('severity', '—')}"
+                                    )
 
                                 if (
                                     number
@@ -800,7 +826,6 @@ else:
                 "All processed batches are visible."
             )
 
-
 st.markdown(
     '<div class="section-title">'
     'System Intelligence'
@@ -808,8 +833,8 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-
 left_panel, right_panel = st.columns(2)
+
 
 with left_panel:
 
@@ -901,6 +926,38 @@ with left_panel:
                 st.write(
                     "**Maximum Z-Score:** —"
                 )
+
+            st.markdown("### Root-Cause Diagnosis")
+
+            st.write(
+                f"**Root Cause:** "
+                f"{anomaly.get('root_cause', 'Not classified')}"
+            )
+
+            st.write(
+                f"**Affected Sensor:** "
+                f"{anomaly.get('affected_sensor', '—')}"
+            )
+
+            rc_col1, rc_col2 = st.columns(2)
+
+            with rc_col1:
+                st.write(
+                    f"**Confidence:** {anomaly.get('confidence', '—')}"
+                )
+
+            with rc_col2:
+                st.write(
+                    f"**Severity:** {anomaly.get('severity', '—')}"
+                )
+
+            action = anomaly.get('recommended_action', '—')
+            evidence = anomaly.get('diagnostic_evidence', '—')
+
+            st.info(f"**Recommended Action:** {action}")
+
+            with st.expander("Diagnostic Evidence"):
+                st.write(evidence)
 
             try:
 
@@ -998,7 +1055,6 @@ with right_panel:
                 for result in processor.results
             )
 
-
             anomaly_rate = (
 
                 (anomaly_count / processed)
@@ -1008,7 +1064,6 @@ with right_panel:
 
                 else 0
             )
-
 
             st.write(
                 "**Model:** "
@@ -1025,6 +1080,10 @@ with right_panel:
 
             st.write(
                 "**ART3 Rule Detectors:** ACTIVE"
+            )
+
+            st.write(
+                "**Root-Cause Engine:** ACTIVE"
             )
 
             st.write(
@@ -1110,7 +1169,6 @@ with right_panel:
                 f"{remaining}"
             )
 
-
             if processor.last_batch is not None:
 
                 if processor.last_batch[
@@ -1128,6 +1186,7 @@ with right_panel:
                         "No model retraining occurred "
                         "during the latest batch."
                     )
+
 
 if processor is not None and processed > 0:
 
@@ -1166,6 +1225,10 @@ if processor is not None and processed > 0:
                 use_container_width=True
             )
 
+
+# One simulated telemetry record is processed per cycle.
+# Streamlit reruns the script after each record, preserving
+# all detector state in st.session_state.
 
 if st.session_state.is_streaming:
 
