@@ -1116,6 +1116,9 @@ with right_panel:
 
             st.divider()
 
+            # -------------------------------------------------
+            # Model details
+            # -------------------------------------------------
 
             st.write(
                 f"**Baseline Size:** "
@@ -1132,6 +1135,9 @@ with right_panel:
                 f"{remaining}"
             )
 
+            # -------------------------------------------------
+            # Latest model update
+            # -------------------------------------------------
 
             if processor.last_batch is not None:
 
