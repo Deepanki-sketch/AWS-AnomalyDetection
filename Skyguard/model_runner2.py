@@ -37,8 +37,6 @@ from ART3.ARTmodel import (
     classify_triggers,
 )
 
-from root_cause_engine import RootCauseEngine
-
 
 # =========================================================
 # STREAM PROCESSOR
@@ -68,10 +66,9 @@ class StreamProcessor:
         self,
         df,
         baseline_size=200,
-        start_index=0,
+        start_index=200,
         end_index=None,
-        batch_size=50,
-        baseline_df=None
+        batch_size=50
     ):
 
         # -------------------------------------------------
@@ -108,7 +105,7 @@ class StreamProcessor:
         if self.baseline_size > len(self.df):
             raise ValueError("Baseline size cannot be larger than the dataset.")
 
-        if baseline_df is None and self.start_index < self.baseline_size:
+        if self.start_index < self.baseline_size:
             raise ValueError(
                 "Detection start cannot be smaller than the baseline size."
             )
@@ -123,30 +120,9 @@ class StreamProcessor:
         # Create baseline
         # -------------------------------------------------
 
-        if baseline_df is None:
-            self.baseline_df = (
-                self.df.iloc[:self.baseline_size].copy()
-            )
-        else:
-            self.baseline_df = (
-                baseline_df
-                .sort_values("timestamp")
-                .reset_index(drop=True)
-                .copy()
-            )
-
-            if self.baseline_df.empty:
-                raise ValueError("The clean training dataset is empty.")
-
-            if not set(FEATURES).issubset(self.baseline_df.columns):
-                raise ValueError(
-                    "Clean training dataset must contain: "
-                    + ", ".join(FEATURES)
-                )
-
-            # The selected baseline size controls how much clean data
-            # is used for training. The stream itself remains separate.
-            self.baseline_df = self.baseline_df.iloc[:self.baseline_size].copy()
+        self.baseline_df = (
+            self.df.iloc[:self.baseline_size].copy()
+        )
 
         # -------------------------------------------------
         # Create detection stream
@@ -160,7 +136,7 @@ class StreamProcessor:
         # Create ART3 components
         # -------------------------------------------------
 
-        self.adaptive = AdaptiveModel(self.baseline_df, load_saved=False)
+        self.adaptive = AdaptiveModel(self.baseline_df)
         self.roller = RollingZScore()
 
         # ART3 state that must persist across batches.
@@ -192,83 +168,6 @@ class StreamProcessor:
 
         self.last_batch = None
         self.last_anomaly = None
-
-        # Live-stream feed state. Telemetry is processed one row at a time,
-        # but rows are grouped into the configured batch size for display.
-        self.live_batch_number = 0
-        self.live_batch = None
-
-        # Root-cause diagnostic state mirrors the supplied Root_cause_3.py
-        # and is kept separate from ART3 detection state.
-        self.root_cause_engine = RootCauseEngine()
-
-    # =====================================================
-    # PROCESS NEXT SINGLE TELEMETRY READING
-    # =====================================================
-
-    def process_next_row(self):
-        """Process exactly one telemetry record for live streaming.
-
-        ART3 receives one telemetry row per call. For the dashboard feed,
-        those rows are accumulated into the configured display batch size,
-        so the feed shows a live-updating current batch rather than creating
-        a new batch card for every simulated minute.
-        """
-        if self.finished():
-            return None
-
-        # Reuse the same stateful ART3 logic while advancing exactly one row.
-        self.process_next(batch_size=1)
-
-        single = self.batch_history.pop()
-
-        # Start a new display batch when the previous one is full.
-        if (
-            self.live_batch is None
-            or self.live_batch["readings_processed"] >= self.batch_size
-        ):
-            self.live_batch_number += 1
-            self.live_batch = {
-                "batch_number": self.live_batch_number,
-                "start_position": single["start_position"],
-                "end_position": single["end_position"],
-                "readings_processed": 0,
-                "start_timestamp": single["start_timestamp"],
-                "end_timestamp": single["end_timestamp"],
-                "latest_reading": single["latest_reading"],
-                "anomaly_count": 0,
-                "status": "NORMAL",
-                "anomalies": [],
-                "model_refitted": False,
-                "processed_total": single["processed_total"],
-                "stream_total": single["stream_total"],
-            }
-
-        batch = self.live_batch
-
-        batch["end_position"] = single["end_position"]
-        batch["readings_processed"] += single["readings_processed"]
-        batch["end_timestamp"] = single["end_timestamp"]
-        batch["latest_reading"] = single["latest_reading"]
-        batch["anomaly_count"] += single["anomaly_count"]
-        batch["anomalies"].extend(single["anomalies"])
-        batch["model_refitted"] = (
-            batch["model_refitted"] or single["model_refitted"]
-        )
-        batch["processed_total"] = single["processed_total"]
-        batch["stream_total"] = single["stream_total"]
-        batch["status"] = (
-            "ANOMALY" if batch["anomaly_count"] > 0 else "NORMAL"
-        )
-
-        # The temporary single-row entry was removed above. Keep the
-        # existing live batch in place while it is filling; append a new
-        # card only when a fresh live batch starts.
-        if not self.batch_history or self.batch_history[-1] is not batch:
-            self.batch_history.append(batch)
-
-        self.last_batch = batch
-        return batch
 
     # =====================================================
     # PROCESS NEXT BATCH
@@ -402,19 +301,6 @@ class StreamProcessor:
                 triggers = ["final_anomaly_decision"]
 
             # ---------------------------------------------
-            # Root-cause diagnosis
-            # ---------------------------------------------
-            root_cause = self.root_cause_engine.diagnose(
-                row_dict,
-                {
-                    **ml_result,
-                    "is_anomaly": is_anomaly,
-                    "iforest_flag": iforest_flag,
-                    "z_flag": ml_result["z_flag"],
-                }
-            )
-
-            # ---------------------------------------------
             # Preserve the dashboard-compatible result shape
             # while exposing ART3's additional information.
             # ---------------------------------------------
@@ -441,28 +327,6 @@ class StreamProcessor:
                 "spike_flags": spike_flags,
                 "drift_flags": drift_flags,
                 "triggers": triggers,
-                # Root-cause diagnosis from Root_cause_3.py
-                "root_cause": root_cause["root_cause"],
-                "affected_sensor": root_cause["affected_sensor"],
-                "confidence": root_cause["confidence"],
-                "severity": root_cause["severity"],
-                "diagnostic_evidence": root_cause["diagnostic_evidence"],
-                "recommended_action": root_cause["recommended_action"],
-                "temperature_change": root_cause["temperature_change"],
-                "humidity_change": root_cause["humidity_change"],
-                "pressure_change": root_cause["pressure_change"],
-                "temperature_spike": root_cause["temperature_spike"],
-                "humidity_spike": root_cause["humidity_spike"],
-                "pressure_spike": root_cause["pressure_spike"],
-                "dew_point_c": root_cause["dew_point_c"],
-                "dew_point_inconsistency": root_cause["dew_point_inconsistency"],
-                "communication_diagnostics": root_cause["communication"],
-                "root_cause_frozen_flags": root_cause["frozen_flags"],
-                "root_cause_drift_flags": root_cause["drift_flags"],
-                "root_cause_simultaneous_reversal": root_cause["simultaneous_reversal"],
-                "root_cause_exposure_issue": root_cause["possible_temperature_exposure_issue"],
-                "root_cause_condensation_issue": root_cause["possible_humidity_condensation_issue"],
-                "max_spike_ratio": root_cause["max_spike_ratio"],
             }
 
             self.results.append(result)
@@ -586,12 +450,6 @@ class StreamProcessor:
         self.batch_number = 0
         self.last_batch = None
         self.last_anomaly = None
-        self.live_batch_number = 0
-        self.live_batch = None
-
-        # Root-cause diagnostic state mirrors the supplied Root_cause_3.py
-        # and is kept separate from ART3 detection state.
-        self.root_cause_engine = RootCauseEngine()
 
     # =====================================================
     # CHECK WHETHER PROCESSING IS FINISHED

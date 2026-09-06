@@ -1,4 +1,5 @@
 import streamlit as st
+import time
 import pandas as pd
 from pathlib import Path
 
@@ -71,48 +72,36 @@ st.markdown(
 
 
 # =========================================================
-# LOAD DATASET
+# LOAD DATASETS
 # =========================================================
 
-CSV_PATH = (
-    Path(__file__).resolve().parent
-    / "TestAnomalyUnlabled.csv"
-)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CLEAN_CSV_PATH = PROJECT_ROOT / "Model Evaluation & Testing" / "AWS_Weather_5000_Clean.csv"
+STREAM_CSV_PATH = PROJECT_ROOT / "ModelV2" / "ART3" / "AWS_Weather_5000_With_Anomalies.csv"
 
 
 @st.cache_data
 def load_data():
 
-    df = pd.read_csv(CSV_PATH)
+    clean_df = pd.read_csv(CLEAN_CSV_PATH)
+    stream_df = pd.read_csv(STREAM_CSV_PATH)
 
-    if "timestamp" not in df.columns:
-        raise ValueError(
-            "CSV must contain a timestamp column."
-        )
+    for name, frame in (("clean training", clean_df), ("stream", stream_df)):
+        if "timestamp" not in frame.columns:
+            raise ValueError(f"{name.title()} CSV must contain a timestamp column.")
 
-    df["timestamp"] = pd.to_datetime(
-        df["timestamp"]
-    )
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"])
 
-    df = (
-        df
-        .sort_values("timestamp")
-        .reset_index(drop=True)
-    )
+    clean_df = clean_df.sort_values("timestamp").reset_index(drop=True)
+    stream_df = stream_df.sort_values("timestamp").reset_index(drop=True)
 
-    return df
+    return clean_df, stream_df
 
 
 try:
-
-    df = load_data()
-
+    clean_df, df = load_data()
 except Exception as e:
-
-    st.error(
-        f"Could not load dataset: {e}"
-    )
-
+    st.error(f"Could not load datasets: {e}")
     st.stop()
 
 
@@ -127,7 +116,16 @@ if "processor" not in st.session_state:
 
 if "visible_blocks" not in st.session_state:
 
-    st.session_state.visible_blocks = 3
+    # Number of newest batches shown in the live feed.
+    # Older batches are revealed with the bottom arrow.
+    st.session_state.visible_blocks = 1
+
+
+if "is_streaming" not in st.session_state:
+    st.session_state.is_streaming = False
+
+if "stream_speed" not in st.session_state:
+    st.session_state.stream_speed = 0.6
 
 
 # =========================================================
@@ -152,13 +150,13 @@ with st.sidebar:
     baseline_size = st.number_input(
         "Baseline Size",
         min_value=1,
-        max_value=len(df),
-        value=min(200, len(df)),
-        step=10,
+        max_value=len(clean_df),
+        value=len(clean_df),
+        step=100,
 
         help=(
             "Number of initial readings used "
-            "to train the ART1 model."
+            "to train the ART3 model."
         )
     )
 
@@ -168,14 +166,14 @@ with st.sidebar:
 
     start_index = st.number_input(
         "Detection Start",
-        min_value=1,
-        max_value=max(1, len(df) - 1),
-        value=min(200, len(df) - 1),
+        min_value=0,
+        max_value=max(0, len(df) - 1),
+        value=0,
         step=10,
 
         help=(
-            "Dataset index from which anomaly "
-            "detection begins."
+            "Index in the anomaly stream from which "
+            "live anomaly detection begins."
         )
     )
 
@@ -208,8 +206,9 @@ with st.sidebar:
         step=10,
 
         help=(
-            "Number of readings processed "
-            "when Process Next Batch is clicked."
+            "Internal grouping size used for the Live "
+            "Processing Feed. Live mode still processes one "
+            "telemetry reading at a time."
         )
     )
 
@@ -242,12 +241,66 @@ with st.sidebar:
 
     st.divider()
 
+    st.subheader("Live Telemetry")
+
+    live_col1, live_col2 = st.columns(2)
+
+    with live_col1:
+        start_stream = st.button(
+            "▶ Start Stream" if not st.session_state.is_streaming else "⏸ Streaming...",
+            use_container_width=True,
+            disabled=st.session_state.is_streaming
+        )
+
+    with live_col2:
+        pause_stream = st.button(
+            "⏸ Pause",
+            use_container_width=True,
+            disabled=not st.session_state.is_streaming
+        )
+
+    stream_speed = st.slider(
+        "Stream Speed (seconds / reading)",
+        min_value=0.2,
+        max_value=2.0,
+        value=float(st.session_state.stream_speed),
+        step=0.1
+    )
+    st.session_state.stream_speed = stream_speed
+
+    if start_stream:
+        # Starting Live Stream also initializes the ART3 processor when the
+        # user has not manually pressed Apply Settings first.
+        if st.session_state.processor is None:
+            try:
+                st.session_state.processor = StreamProcessor(
+                    df=df,
+                    baseline_size=baseline_size,
+                    start_index=start_index,
+                    end_index=end_index,
+                    batch_size=batch_size,
+                    baseline_df=clean_df
+                )
+                st.session_state.visible_blocks = 1
+            except Exception as e:
+                st.error(f"Could not start the live stream: {e}")
+                st.stop()
+
+        st.session_state.is_streaming = True
+        st.rerun()
+
+    if pause_stream:
+        st.session_state.is_streaming = False
+        st.rerun()
+
+    st.divider()
+
     st.caption(
         f"Dataset Records: {len(df)}"
     )
 
     st.caption(
-        "Detection Model: ART1"
+        "Detection Model: ART3"
     )
 
 
@@ -259,6 +312,8 @@ if apply_settings:
 
     try:
 
+        st.session_state.is_streaming = False
+
         st.session_state.processor = StreamProcessor(
             df=df,
 
@@ -268,10 +323,12 @@ if apply_settings:
 
             end_index=end_index,
 
-            batch_size=batch_size
+            batch_size=batch_size,
+
+            baseline_df=clean_df
         )
 
-        st.session_state.visible_blocks = 3
+        st.session_state.visible_blocks = 1
 
         st.success(
             "Processing settings applied."
@@ -288,11 +345,13 @@ if apply_settings:
 
 if reset_detection:
 
+    st.session_state.is_streaming = False
+
     if st.session_state.processor is not None:
 
         st.session_state.processor.reset()
 
-    st.session_state.visible_blocks = 3
+    st.session_state.visible_blocks = 1
 
     st.info(
         "Detection has been reset."
@@ -422,348 +481,381 @@ else:
         )
     )
 
+    if st.session_state.is_streaming:
+        st.info(
+            f"Live stream running — processing one telemetry reading every "
+            f"{st.session_state.stream_speed:.1f}s"
+        )
+    else:
+        st.caption("Live stream paused. Processing position is preserved.")
+
     # -----------------------------------------------------
     # Batch history
     # -----------------------------------------------------
 
-    batches = list(
-        reversed(
-            processor.batch_history
-        )
-    )
+    # Reverse the history so the newest processed batch is
+    # ALWAYS displayed first.
+    batches = list(reversed(processor.batch_history))
 
     if not batches:
 
         st.info(
             "No readings have been processed yet. "
-            "Click Process Next Batch from the sidebar."
+            "Press Start Stream to begin simulated live telemetry, or use Process Next Batch for manual testing."
         )
 
     else:
 
-        visible_batches = batches[
-            :st.session_state.visible_blocks
-        ]
+        # Keep the complete Live Processing Feed in one
+        # fixed-height area so the rest of the dashboard
+        # does not move down every time a new batch arrives.
+        feed_container = st.container(
+            height=680,
+            border=True
+        )
 
-        # =================================================
-        # DISPLAY EACH PROCESSED BATCH
-        # =================================================
+        with feed_container:
 
-        for batch in visible_batches:
+            visible_batches = batches[
+                :st.session_state.visible_blocks
+            ]
 
-            # -------------------------------------------------
-            # CARD
-            # -------------------------------------------------
+            # =================================================
+            # DISPLAY NEWEST BATCH FIRST
+            # =================================================
 
-            with st.container(border=True):
-
-                latest = (
-                    batch["latest_reading"]
-                )
-
-                status = batch["status"]
+            for batch in visible_batches:
 
                 # -------------------------------------------------
-                # Batch heading
+                # CARD
                 # -------------------------------------------------
 
-                heading_col, status_col = (
-                    st.columns([4, 1])
-                )
+                with st.container(border=True):
 
-                with heading_col:
+                    latest = batch["latest_reading"]
+                    status = batch["status"]
 
-                    st.markdown(
-                        f"### Processing Batch "
-                        f"{batch['batch_number']}"
+                    # -------------------------------------------------
+                    # Batch heading
+                    # -------------------------------------------------
+
+                    heading_col, status_col = (
+                        st.columns([4, 1])
                     )
 
-                    st.caption(
-                        f"{batch['start_timestamp']}"
-                        f" → "
-                        f"{batch['end_timestamp']}"
-                        f"   •   "
-                        f"{batch['readings_processed']} readings"
-                    )
-
-                with status_col:
-
-                    if status == "ANOMALY":
-
-                        st.error(
-                            "ANOMALY DETECTED"
-                        )
-
-                    else:
-
-                        st.success(
-                            "NORMAL"
-                        )
-
-                st.divider()
-
-                # -------------------------------------------------
-                # Sensor readings
-                # -------------------------------------------------
-
-                temp_col, humidity_col, pressure_col = (
-                    st.columns(3)
-                )
-
-                with temp_col:
-
-                    st.caption(
-                        "Temperature"
-                    )
-
-                    temp = latest.get(
-                        "temperature_c"
-                    )
-
-                    if pd.notna(temp):
+                    with heading_col:
 
                         st.markdown(
-                            f"### {temp:.2f} °C"
+                            f"### Processing Batch "
+                            f"{batch['batch_number']}"
                         )
 
-                    else:
-
-                        st.markdown(
-                            "### —"
+                        st.caption(
+                            f"{batch['start_timestamp']}"
+                            f" → "
+                            f"{batch['end_timestamp']}"
+                            f"   •   "
+                            f"{batch['readings_processed']} readings"
                         )
 
-                with humidity_col:
+                    with status_col:
 
-                    st.caption(
-                        "Humidity"
+                        if status == "ANOMALY":
+
+                            st.error(
+                                "ANOMALY DETECTED"
+                            )
+
+                        else:
+
+                            st.success(
+                                "NORMAL"
+                            )
+
+                    st.divider()
+
+                    # -------------------------------------------------
+                    # Sensor readings
+                    # -------------------------------------------------
+
+                    temp_col, humidity_col, pressure_col = (
+                        st.columns(3)
                     )
 
-                    humidity = latest.get(
-                        "humidity_pct"
-                    )
+                    with temp_col:
 
-                    if pd.notna(humidity):
+                        st.caption("Temperature")
 
-                        st.markdown(
-                            f"### {humidity:.2f} %"
+                        temp = latest.get(
+                            "temperature_c"
                         )
 
-                    else:
-
-                        st.markdown(
-                            "### —"
-                        )
-
-                with pressure_col:
-
-                    st.caption(
-                        "Pressure"
-                    )
-
-                    pressure = latest.get(
-                        "pressure_hpa"
-                    )
-
-                    if pd.notna(pressure):
-
-                        st.markdown(
-                            f"### {pressure:.2f} hPa"
-                        )
-
-                    else:
-
-                        st.markdown(
-                            "### —"
-                        )
-
-                st.divider()
-
-                # -------------------------------------------------
-                # Batch information
-                # -------------------------------------------------
-
-                info1, info2, info3 = (
-                    st.columns(3)
-                )
-
-                with info1:
-
-                    st.caption(
-                        "Anomalies in Batch"
-                    )
-
-                    st.write(
-                        f"**{batch['anomaly_count']}**"
-                    )
-
-                with info2:
-
-                    st.caption(
-                        "Detection Result"
-                    )
-
-                    if batch["anomaly_count"] > 0:
-
-                        st.write(
-                            "**Anomaly detected**"
-                        )
-
-                    else:
-
-                        st.write(
-                            "**No anomaly**"
-                        )
-
-                with info3:
-
-                    st.caption(
-                        "Adaptive Model"
-                    )
-
-                    if batch["model_refitted"]:
-
-                        st.write(
-                            "**Model retrained**"
-                        )
-
-                    else:
-
-                        st.write(
-                            "**No retraining**"
-                        )
-
-                # =================================================
-                # DETECTION DETAILS
-                # =================================================
-
-                if batch["anomalies"]:
-
-                    with st.expander(
-                        "Detection Details"
-                    ):
-
-                        for number, anomaly in enumerate(
-                            batch["anomalies"],
-                            start=1
-                        ):
+                        if pd.notna(temp):
 
                             st.markdown(
-                                f"#### Anomaly {number}"
+                                f"### {temp:.2f} °C"
                             )
 
-                            detail1, detail2 = (
-                                st.columns(2)
+                        else:
+
+                            st.markdown("### —")
+
+                    with humidity_col:
+
+                        st.caption("Humidity")
+
+                        humidity = latest.get(
+                            "humidity_pct"
+                        )
+
+                        if pd.notna(humidity):
+
+                            st.markdown(
+                                f"### {humidity:.2f} %"
                             )
 
-                            with detail1:
+                        else:
 
-                                st.write(
-                                    f"**Timestamp:** "
-                                    f"{anomaly.get('timestamp', '—')}"
-                                )
+                            st.markdown("### —")
 
-                                # Determine detector
-                                detectors = []
+                    with pressure_col:
 
-                                if anomaly.get(
-                                    "iforest_flag",
-                                    False
-                                ):
+                        st.caption("Pressure")
 
-                                    detectors.append(
-                                        "Isolation Forest"
-                                    )
+                        pressure = latest.get(
+                            "pressure_hpa"
+                        )
 
-                                if anomaly.get(
-                                    "z_flag",
-                                    False
-                                ):
+                        if pd.notna(pressure):
 
-                                    detectors.append(
-                                        "Rolling Z-Score"
-                                    )
+                            st.markdown(
+                                f"### {pressure:.2f} hPa"
+                            )
 
-                                detector_text = (
-                                    " + ".join(detectors)
-                                    if detectors
-                                    else "Unknown"
-                                )
+                        else:
 
-                                st.write(
-                                    f"**Triggered By:** "
-                                    f"{detector_text}"
-                                )
+                            st.markdown("### —")
 
-                            with detail2:
+                    st.divider()
 
-                                score = anomaly.get(
-                                    "iforest_score"
-                                )
+                    # -------------------------------------------------
+                    # Batch information
+                    # -------------------------------------------------
 
-                                zscore = anomaly.get(
-                                    "zscore_max"
-                                )
+                    info1, info2, info3 = (
+                        st.columns(3)
+                    )
 
-                                if isinstance(
-                                    score,
-                                    (int, float)
-                                ):
+                    with info1:
 
-                                    st.write(
-                                        f"**Isolation Forest "
-                                        f"Score:** "
-                                        f"{score:.4f}"
-                                    )
+                        st.caption(
+                            "Anomalies in Batch"
+                        )
 
-                                else:
+                        st.write(
+                            f"**{batch['anomaly_count']}**"
+                        )
 
-                                    st.write(
-                                        "**Isolation Forest "
-                                        "Score:** —"
-                                    )
+                    with info2:
 
-                                if isinstance(
-                                    zscore,
-                                    (int, float)
-                                ):
+                        st.caption(
+                            "Detection Result"
+                        )
 
-                                    st.write(
-                                        f"**Maximum Z-Score:** "
-                                        f"{zscore:.4f}"
-                                    )
+                        if batch["anomaly_count"] > 0:
 
-                                else:
+                            st.write(
+                                "**Anomaly detected**"
+                            )
 
-                                    st.write(
-                                        "**Maximum Z-Score:** —"
-                                    )
+                        else:
 
-                            if (
-                                number
-                                < len(
-                                    batch["anomalies"]
-                                )
+                            st.write(
+                                "**No anomaly**"
+                            )
+
+                    with info3:
+
+                        st.caption(
+                            "Adaptive Model"
+                        )
+
+                        if batch["model_refitted"]:
+
+                            st.write(
+                                "**Model retrained**"
+                            )
+
+                        else:
+
+                            st.write(
+                                "**No retraining**"
+                            )
+
+                    # =================================================
+                    # DETECTION DETAILS
+                    # =================================================
+
+                    if batch["anomalies"]:
+
+                        with st.expander(
+                            "Detection Details"
+                        ):
+
+                            for number, anomaly in enumerate(
+                                batch["anomalies"],
+                                start=1
                             ):
 
-                                st.divider()
+                                st.markdown(
+                                    f"#### Anomaly {number}"
+                                )
+
+                                detail1, detail2 = (
+                                    st.columns(2)
+                                )
+
+                                with detail1:
+
+                                    st.write(
+                                        f"**Timestamp:** "
+                                        f"{anomaly.get('timestamp', '—')}"
+                                    )
+
+                                    # ART3 provides the complete trigger list.
+                                    triggers = anomaly.get("triggers", [])
+
+                                    if triggers:
+                                        detector_text = " + ".join(triggers)
+                                    else:
+                                        detector_text = anomaly.get(
+                                            "anomaly_type", "Unknown"
+                                        )
+
+                                    st.write(
+                                        f"**Triggered By:** "
+                                        f"{detector_text}"
+                                    )
+
+                                with detail2:
+
+                                    score = anomaly.get(
+                                        "iforest_score"
+                                    )
+
+                                    zscore = anomaly.get(
+                                        "zscore_max"
+                                    )
+
+                                    if isinstance(
+                                        score,
+                                        (int, float)
+                                    ):
+
+                                        st.write(
+                                            f"**Isolation Forest "
+                                            f"Score:** "
+                                            f"{score:.4f}"
+                                        )
+
+                                    else:
+
+                                        st.write(
+                                            "**Isolation Forest "
+                                            "Score:** —"
+                                        )
+
+                                    if isinstance(
+                                        zscore,
+                                        (int, float)
+                                    ):
+
+                                        st.write(
+                                            f"**Maximum Z-Score:** "
+                                            f"{zscore:.4f}"
+                                        )
+
+                                    else:
+
+                                        st.write(
+                                            "**Maximum Z-Score:** —"
+                                        )
+
+                                if (
+                                    number
+                                    < len(
+                                        batch["anomalies"]
+                                    )
+                                ):
+
+                                    st.divider()
+
+            # -------------------------------------------------
+            # Feed navigation hint
+            # -------------------------------------------------
+
+            if len(batches) > st.session_state.visible_blocks:
+
+                st.markdown(
+                    "<div style='text-align:center; "
+                    "color:#888; padding:0.2rem 0;'>"
+                    "More processed batches are available"
+                    "</div>",
+                    unsafe_allow_html=True
+                )
 
         # -----------------------------------------------------
-        # Older batches
+        # Feed navigation
         # -----------------------------------------------------
+        # By default only the latest/current batch is visible.
+        # Show More Batches reveals older batches.
+        # Hide Batches returns the feed to the latest batch only.
 
-        if (
-            len(batches)
-            > st.session_state.visible_blocks
-        ):
+        has_older_batches = (
+            len(batches) > st.session_state.visible_blocks
+        )
+
+        if st.session_state.visible_blocks > 1:
+
+            nav_col1, nav_col2 = st.columns(2)
+
+            with nav_col1:
+
+                if has_older_batches:
+
+                    if st.button(
+                        "⌄  Show More Batches",
+                        use_container_width=True
+                    ):
+
+                        st.session_state.visible_blocks += 3
+                        st.rerun()
+
+            with nav_col2:
+
+                if st.button(
+                    "⌃  Hide Batches",
+                    use_container_width=True
+                ):
+
+                    st.session_state.visible_blocks = 1
+                    st.rerun()
+
+        elif has_older_batches:
 
             if st.button(
-                "Show Older Blocks",
+                "⌄  Show More Batches",
                 use_container_width=True
             ):
 
                 st.session_state.visible_blocks += 3
-
                 st.rerun()
+
+        else:
+
+            st.caption(
+                "All processed batches are visible."
+            )
 
 
 # =========================================================
@@ -830,34 +922,17 @@ with left_panel:
             )
 
             # -------------------------------------------------
-            # Detector
+            # ART3 detector triggers
             # -------------------------------------------------
 
-            detectors = []
+            triggers = anomaly.get("triggers", [])
 
-            if anomaly.get(
-                "iforest_flag",
-                False
-            ):
-
-                detectors.append(
-                    "Isolation Forest"
+            if triggers:
+                detector_text = " + ".join(triggers)
+            else:
+                detector_text = anomaly.get(
+                    "anomaly_type", "Unknown"
                 )
-
-            if anomaly.get(
-                "z_flag",
-                False
-            ):
-
-                detectors.append(
-                    "Rolling Z-Score"
-                )
-
-            detector_text = (
-                " + ".join(detectors)
-                if detectors
-                else "Unknown"
-            )
 
             st.write(
                 f"**Triggered By:** "
@@ -1037,7 +1112,7 @@ with right_panel:
 
             st.write(
                 "**Model:** "
-                "ART1 / AdaptiveRTModel"
+                "ART3 / AdaptiveRTModel"
             )
 
             st.write(
@@ -1046,6 +1121,10 @@ with right_panel:
 
             st.write(
                 "**Rolling Z-Score:** ACTIVE"
+            )
+
+            st.write(
+                "**ART3 Rule Detectors:** ACTIVE"
             )
 
             st.divider()
@@ -1156,3 +1235,26 @@ with right_panel:
                         "No model retraining occurred "
                         "during the latest batch."
                     )
+
+# =========================================================
+# LIVE STREAM LOOP
+# =========================================================
+# One simulated telemetry record is processed per cycle.
+# Streamlit reruns the script after each record, preserving
+# all detector state in st.session_state.
+
+if st.session_state.is_streaming:
+
+    if processor is None:
+        st.session_state.is_streaming = False
+        st.warning("Apply Settings before starting the live stream.")
+        st.stop()
+
+    if processor.finished():
+        st.session_state.is_streaming = False
+        st.success("Live telemetry stream completed.")
+        st.rerun()
+
+    time.sleep(st.session_state.stream_speed)
+    processor.process_next_row()
+    st.rerun()

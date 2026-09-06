@@ -127,7 +127,9 @@ if "processor" not in st.session_state:
 
 if "visible_blocks" not in st.session_state:
 
-    st.session_state.visible_blocks = 3
+    # Number of newest batches shown in the live feed.
+    # Older batches are revealed with the bottom arrow.
+    st.session_state.visible_blocks = 1
 
 
 # =========================================================
@@ -271,7 +273,7 @@ if apply_settings:
             batch_size=batch_size
         )
 
-        st.session_state.visible_blocks = 3
+        st.session_state.visible_blocks = 1
 
         st.success(
             "Processing settings applied."
@@ -292,7 +294,7 @@ if reset_detection:
 
         st.session_state.processor.reset()
 
-    st.session_state.visible_blocks = 3
+    st.session_state.visible_blocks = 1
 
     st.info(
         "Detection has been reset."
@@ -426,11 +428,9 @@ else:
     # Batch history
     # -----------------------------------------------------
 
-    batches = list(
-        reversed(
-            processor.batch_history
-        )
-    )
+    # Reverse the history so the newest processed batch is
+    # ALWAYS displayed first.
+    batches = list(reversed(processor.batch_history))
 
     if not batches:
 
@@ -441,329 +441,373 @@ else:
 
     else:
 
-        visible_batches = batches[
-            :st.session_state.visible_blocks
-        ]
+        # Keep the complete Live Processing Feed in one
+        # fixed-height area so the rest of the dashboard
+        # does not move down every time a new batch arrives.
+        feed_container = st.container(
+            height=680,
+            border=True
+        )
 
-        # =================================================
-        # DISPLAY EACH PROCESSED BATCH
-        # =================================================
+        with feed_container:
 
-        for batch in visible_batches:
+            visible_batches = batches[
+                :st.session_state.visible_blocks
+            ]
 
-            # -------------------------------------------------
-            # CARD
-            # -------------------------------------------------
+            # =================================================
+            # DISPLAY NEWEST BATCH FIRST
+            # =================================================
 
-            with st.container(border=True):
-
-                latest = (
-                    batch["latest_reading"]
-                )
-
-                status = batch["status"]
+            for batch in visible_batches:
 
                 # -------------------------------------------------
-                # Batch heading
+                # CARD
                 # -------------------------------------------------
 
-                heading_col, status_col = (
-                    st.columns([4, 1])
-                )
+                with st.container(border=True):
 
-                with heading_col:
+                    latest = batch["latest_reading"]
+                    status = batch["status"]
 
-                    st.markdown(
-                        f"### Processing Batch "
-                        f"{batch['batch_number']}"
+                    # -------------------------------------------------
+                    # Batch heading
+                    # -------------------------------------------------
+
+                    heading_col, status_col = (
+                        st.columns([4, 1])
                     )
 
-                    st.caption(
-                        f"{batch['start_timestamp']}"
-                        f" → "
-                        f"{batch['end_timestamp']}"
-                        f"   •   "
-                        f"{batch['readings_processed']} readings"
-                    )
-
-                with status_col:
-
-                    if status == "ANOMALY":
-
-                        st.error(
-                            "ANOMALY DETECTED"
-                        )
-
-                    else:
-
-                        st.success(
-                            "NORMAL"
-                        )
-
-                st.divider()
-
-                # -------------------------------------------------
-                # Sensor readings
-                # -------------------------------------------------
-
-                temp_col, humidity_col, pressure_col = (
-                    st.columns(3)
-                )
-
-                with temp_col:
-
-                    st.caption(
-                        "Temperature"
-                    )
-
-                    temp = latest.get(
-                        "temperature_c"
-                    )
-
-                    if pd.notna(temp):
+                    with heading_col:
 
                         st.markdown(
-                            f"### {temp:.2f} °C"
+                            f"### Processing Batch "
+                            f"{batch['batch_number']}"
                         )
 
-                    else:
-
-                        st.markdown(
-                            "### —"
+                        st.caption(
+                            f"{batch['start_timestamp']}"
+                            f" → "
+                            f"{batch['end_timestamp']}"
+                            f"   •   "
+                            f"{batch['readings_processed']} readings"
                         )
 
-                with humidity_col:
+                    with status_col:
 
-                    st.caption(
-                        "Humidity"
+                        if status == "ANOMALY":
+
+                            st.error(
+                                "ANOMALY DETECTED"
+                            )
+
+                        else:
+
+                            st.success(
+                                "NORMAL"
+                            )
+
+                    st.divider()
+
+                    # -------------------------------------------------
+                    # Sensor readings
+                    # -------------------------------------------------
+
+                    temp_col, humidity_col, pressure_col = (
+                        st.columns(3)
                     )
 
-                    humidity = latest.get(
-                        "humidity_pct"
-                    )
+                    with temp_col:
 
-                    if pd.notna(humidity):
+                        st.caption("Temperature")
 
-                        st.markdown(
-                            f"### {humidity:.2f} %"
+                        temp = latest.get(
+                            "temperature_c"
                         )
 
-                    else:
-
-                        st.markdown(
-                            "### —"
-                        )
-
-                with pressure_col:
-
-                    st.caption(
-                        "Pressure"
-                    )
-
-                    pressure = latest.get(
-                        "pressure_hpa"
-                    )
-
-                    if pd.notna(pressure):
-
-                        st.markdown(
-                            f"### {pressure:.2f} hPa"
-                        )
-
-                    else:
-
-                        st.markdown(
-                            "### —"
-                        )
-
-                st.divider()
-
-                # -------------------------------------------------
-                # Batch information
-                # -------------------------------------------------
-
-                info1, info2, info3 = (
-                    st.columns(3)
-                )
-
-                with info1:
-
-                    st.caption(
-                        "Anomalies in Batch"
-                    )
-
-                    st.write(
-                        f"**{batch['anomaly_count']}**"
-                    )
-
-                with info2:
-
-                    st.caption(
-                        "Detection Result"
-                    )
-
-                    if batch["anomaly_count"] > 0:
-
-                        st.write(
-                            "**Anomaly detected**"
-                        )
-
-                    else:
-
-                        st.write(
-                            "**No anomaly**"
-                        )
-
-                with info3:
-
-                    st.caption(
-                        "Adaptive Model"
-                    )
-
-                    if batch["model_refitted"]:
-
-                        st.write(
-                            "**Model retrained**"
-                        )
-
-                    else:
-
-                        st.write(
-                            "**No retraining**"
-                        )
-
-                # =================================================
-                # DETECTION DETAILS
-                # =================================================
-
-                if batch["anomalies"]:
-
-                    with st.expander(
-                        "Detection Details"
-                    ):
-
-                        for number, anomaly in enumerate(
-                            batch["anomalies"],
-                            start=1
-                        ):
+                        if pd.notna(temp):
 
                             st.markdown(
-                                f"#### Anomaly {number}"
+                                f"### {temp:.2f} °C"
                             )
 
-                            detail1, detail2 = (
-                                st.columns(2)
+                        else:
+
+                            st.markdown("### —")
+
+                    with humidity_col:
+
+                        st.caption("Humidity")
+
+                        humidity = latest.get(
+                            "humidity_pct"
+                        )
+
+                        if pd.notna(humidity):
+
+                            st.markdown(
+                                f"### {humidity:.2f} %"
                             )
 
-                            with detail1:
+                        else:
 
-                                st.write(
-                                    f"**Timestamp:** "
-                                    f"{anomaly.get('timestamp', '—')}"
-                                )
+                            st.markdown("### —")
 
-                                # Determine detector
-                                detectors = []
+                    with pressure_col:
 
-                                if anomaly.get(
-                                    "iforest_flag",
-                                    False
-                                ):
+                        st.caption("Pressure")
 
-                                    detectors.append(
-                                        "Isolation Forest"
-                                    )
+                        pressure = latest.get(
+                            "pressure_hpa"
+                        )
 
-                                if anomaly.get(
-                                    "z_flag",
-                                    False
-                                ):
+                        if pd.notna(pressure):
 
-                                    detectors.append(
-                                        "Rolling Z-Score"
-                                    )
+                            st.markdown(
+                                f"### {pressure:.2f} hPa"
+                            )
 
-                                detector_text = (
-                                    " + ".join(detectors)
-                                    if detectors
-                                    else "Unknown"
-                                )
+                        else:
 
-                                st.write(
-                                    f"**Triggered By:** "
-                                    f"{detector_text}"
-                                )
+                            st.markdown("### —")
 
-                            with detail2:
+                    st.divider()
 
-                                score = anomaly.get(
-                                    "iforest_score"
-                                )
+                    # -------------------------------------------------
+                    # Batch information
+                    # -------------------------------------------------
 
-                                zscore = anomaly.get(
-                                    "zscore_max"
-                                )
+                    info1, info2, info3 = (
+                        st.columns(3)
+                    )
 
-                                if isinstance(
-                                    score,
-                                    (int, float)
-                                ):
+                    with info1:
 
-                                    st.write(
-                                        f"**Isolation Forest "
-                                        f"Score:** "
-                                        f"{score:.4f}"
-                                    )
+                        st.caption(
+                            "Anomalies in Batch"
+                        )
 
-                                else:
+                        st.write(
+                            f"**{batch['anomaly_count']}**"
+                        )
 
-                                    st.write(
-                                        "**Isolation Forest "
-                                        "Score:** —"
-                                    )
+                    with info2:
 
-                                if isinstance(
-                                    zscore,
-                                    (int, float)
-                                ):
+                        st.caption(
+                            "Detection Result"
+                        )
 
-                                    st.write(
-                                        f"**Maximum Z-Score:** "
-                                        f"{zscore:.4f}"
-                                    )
+                        if batch["anomaly_count"] > 0:
 
-                                else:
+                            st.write(
+                                "**Anomaly detected**"
+                            )
 
-                                    st.write(
-                                        "**Maximum Z-Score:** —"
-                                    )
+                        else:
 
-                            if (
-                                number
-                                < len(
-                                    batch["anomalies"]
-                                )
+                            st.write(
+                                "**No anomaly**"
+                            )
+
+                    with info3:
+
+                        st.caption(
+                            "Adaptive Model"
+                        )
+
+                        if batch["model_refitted"]:
+
+                            st.write(
+                                "**Model retrained**"
+                            )
+
+                        else:
+
+                            st.write(
+                                "**No retraining**"
+                            )
+
+                    # =================================================
+                    # DETECTION DETAILS
+                    # =================================================
+
+                    if batch["anomalies"]:
+
+                        with st.expander(
+                            "Detection Details"
+                        ):
+
+                            for number, anomaly in enumerate(
+                                batch["anomalies"],
+                                start=1
                             ):
 
-                                st.divider()
+                                st.markdown(
+                                    f"#### Anomaly {number}"
+                                )
+
+                                detail1, detail2 = (
+                                    st.columns(2)
+                                )
+
+                                with detail1:
+
+                                    st.write(
+                                        f"**Timestamp:** "
+                                        f"{anomaly.get('timestamp', '—')}"
+                                    )
+
+                                    # Determine detector
+                                    detectors = []
+
+                                    if anomaly.get(
+                                        "iforest_flag",
+                                        False
+                                    ):
+
+                                        detectors.append(
+                                            "Isolation Forest"
+                                        )
+
+                                    if anomaly.get(
+                                        "z_flag",
+                                        False
+                                    ):
+
+                                        detectors.append(
+                                            "Rolling Z-Score"
+                                        )
+
+                                    detector_text = (
+                                        " + ".join(detectors)
+                                        if detectors
+                                        else "Unknown"
+                                    )
+
+                                    st.write(
+                                        f"**Triggered By:** "
+                                        f"{detector_text}"
+                                    )
+
+                                with detail2:
+
+                                    score = anomaly.get(
+                                        "iforest_score"
+                                    )
+
+                                    zscore = anomaly.get(
+                                        "zscore_max"
+                                    )
+
+                                    if isinstance(
+                                        score,
+                                        (int, float)
+                                    ):
+
+                                        st.write(
+                                            f"**Isolation Forest "
+                                            f"Score:** "
+                                            f"{score:.4f}"
+                                        )
+
+                                    else:
+
+                                        st.write(
+                                            "**Isolation Forest "
+                                            "Score:** —"
+                                        )
+
+                                    if isinstance(
+                                        zscore,
+                                        (int, float)
+                                    ):
+
+                                        st.write(
+                                            f"**Maximum Z-Score:** "
+                                            f"{zscore:.4f}"
+                                        )
+
+                                    else:
+
+                                        st.write(
+                                            "**Maximum Z-Score:** —"
+                                        )
+
+                                if (
+                                    number
+                                    < len(
+                                        batch["anomalies"]
+                                    )
+                                ):
+
+                                    st.divider()
+
+            # -------------------------------------------------
+            # Feed navigation hint
+            # -------------------------------------------------
+
+            if len(batches) > st.session_state.visible_blocks:
+
+                st.markdown(
+                    "<div style='text-align:center; "
+                    "color:#888; padding:0.2rem 0;'>"
+                    "More processed batches are available"
+                    "</div>",
+                    unsafe_allow_html=True
+                )
 
         # -----------------------------------------------------
-        # Older batches
+        # Feed navigation
         # -----------------------------------------------------
+        # By default only the latest/current batch is visible.
+        # Show More Batches reveals older batches.
+        # Hide Batches returns the feed to the latest batch only.
 
-        if (
-            len(batches)
-            > st.session_state.visible_blocks
-        ):
+        has_older_batches = (
+            len(batches) > st.session_state.visible_blocks
+        )
+
+        if st.session_state.visible_blocks > 1:
+
+            nav_col1, nav_col2 = st.columns(2)
+
+            with nav_col1:
+
+                if has_older_batches:
+
+                    if st.button(
+                        "⌄  Show More Batches",
+                        use_container_width=True
+                    ):
+
+                        st.session_state.visible_blocks += 3
+                        st.rerun()
+
+            with nav_col2:
+
+                if st.button(
+                    "⌃  Hide Batches",
+                    use_container_width=True
+                ):
+
+                    st.session_state.visible_blocks = 1
+                    st.rerun()
+
+        elif has_older_batches:
 
             if st.button(
-                "Show Older Blocks",
+                "⌄  Show More Batches",
                 use_container_width=True
             ):
 
                 st.session_state.visible_blocks += 3
-
                 st.rerun()
+
+        else:
+
+            st.caption(
+                "All processed batches are visible."
+            )
 
 
 # =========================================================
