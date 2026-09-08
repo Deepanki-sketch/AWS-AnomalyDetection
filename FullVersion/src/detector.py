@@ -154,7 +154,7 @@ class AWSAnomalyDetector:
 
         # In natural diurnal heating (07:00 - 14:00), temperature rises WHILE humidity falls (rh_slope < -0.04 %/min).
         # In sensor drift, temperature drifts upwards WITHOUT the corresponding physical humidity drop!
-        is_t_drift = (abs(t_slope) > 0.014 and rh_slope > -0.02 and np.all(np.diff(t_win[::5]) >= -0.01))
+        is_t_drift = (abs(t_slope) > 0.014 and rh_slope > -0.06 and np.sum(np.diff(t_win[::5]) < -0.01) <= 1)  # allow at most 1 small dip
         is_rh_drift = (abs(rh_slope) > 0.05 and abs(t_slope) < 0.005 and np.all(np.diff(rh_win[::5]) >= -0.01))
 
         if is_t_drift:

@@ -6,7 +6,7 @@ from collections import deque
 normal_features = ["temperature_c","humidity_pct","pressure_hpa"]
 features_change = ["temperature_c_change","humidity_pct_change","pressure_hpa_change"]
 features = normal_features + features_change
-contamination = 0.03
+contamination = 0.01
 z_threshold = 3.0
 rolling_window = 30
 refit_n = 1000
@@ -33,7 +33,7 @@ class TrackChanges:
         return changes
 
 class TrackFrozen:
-    def __init__(self,freeeze_count=6):
+    def __init__(self,freeeze_count=4):
         self.freeze_count = freeeze_count
         self.prev_value = {f: None for f in normal_features}
         self.repeat_count = {f: 0 for f in normal_features}
@@ -53,19 +53,31 @@ class TrackFrozen:
         return any_frozen,frozen_flags
 
 class TrackDrift:
-    def __init__(self,baseline_df,drift_threshold = 4.0):
-        self.drift_threshold = drift_threshold
-        self.baseline_mean = {f: baseline_df[f].mean() for f in normal_features}
-        self.baseline_std = {f: baseline_df[f].std() for f in normal_features}
+    def __init__(self, baseline_df, window=15, slope_threshold=None):
+        self.window = window
+        self.buffers = {f: deque(maxlen=window) for f in normal_features}
+        # If no threshold given, estimate one from baseline's natural volatility
+        if slope_threshold is None:
+            self.slope_threshold = {
+                f: 3.0 * baseline_df[f].diff().std() for f in normal_features
+            }
+        else:
+            self.slope_threshold = {f: slope_threshold for f in normal_features}
 
-    def check_drift(self,row: dict):
+    def check_drift(self, row: dict):
         drift_flags = {}
         for f in normal_features:
-            z = (row[f]-self.baseline_mean[f])/self.baseline_std[f]
-            drift_flags[f] = abs(z)>self.drift_threshold
+            buf = self.buffers[f]
+            buf.append(row[f])
+            if len(buf) >= self.window:
+                x = np.arange(len(buf))
+                slope = np.polyfit(x, buf, 1)[0]   # slope of best-fit line through the window
+                drift_flags[f] = abs(slope) > self.slope_threshold[f]
+            else:
+                drift_flags[f] = False
         any_drift = any(drift_flags.values())
         return any_drift, drift_flags
-
+    
 class RollingZScore:
     def __init__(self,window=rolling_window):
         self.window = window
@@ -99,7 +111,7 @@ def detect_anomaly(row: dict,model,roller:RollingZScore,frozen: TrackFrozen,drif
 
     drift_flag, drift_details = drift.check_drift(row)
 
-    is_anomaly = iforest_flag and z_flag or frozen_flag or drift_flag
+    is_anomaly = (iforest_flag and z_flag) or frozen_flag or drift_flag
 
     return{
         "timestamp": row.get("timestamp"),
