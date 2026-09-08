@@ -284,7 +284,7 @@ def run_art3_pipeline(df,model):
 
     for position,series in df.iterrows():
         row=series.to_dict()
-        ml_result=detect_anomaly(row,bool(iforest_flags[position]),float(iforest_scores[position]),roller: RollingZScore,frozen: TrackFrozen,drift: TrackDrift)
+        ml_result=detect_anomaly(row,bool(iforest_flags[position]),float(iforest_scores[position]),roller,frozen,drift)
         deltas=calculate_sensor_deltas(row,previous_row)
         spike_flags=detect_spikes(deltas)
         frozen_flags=update_frozen_counts(deltas,frozen_counts)
