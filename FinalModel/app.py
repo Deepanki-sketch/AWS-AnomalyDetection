@@ -19,7 +19,7 @@ from src.physics import AtmosphericPhysics
 
 # Page configuration (No emojis)
 st.set_page_config(
-    page_title="AWS Anomaly Detection & Diagnostic Console",
+    page_title="SkyGuard by Vyoma — AWS Anomaly Detection & Diagnostics",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -310,14 +310,14 @@ if 'initialized' not in st.session_state:
 
 
 # Sidebar Navigation & Station Selection (No Emojis)
-st.sidebar.markdown("### AWS Control Station")
-st.sidebar.caption("SIH 2026 • AI-Based Anomaly Detection & Telemetry Engine")
+st.sidebar.markdown("### SkyGuard by Vyoma")
+st.sidebar.caption("AWS Intelligent Anomaly Detection & Diagnostics")
 
-st.sidebar.selectbox("Active Station", [
-    "AWS-IN-DELHI-04 (Safdarjung)",
-    "AWS-IN-BENGALURU-02 (GKVK)",
-    "AWS-IN-SHILLONG-01 (Barapani)",
-    "AWS-IN-MUMBAI-05 (Santacruz)"
+selected_station = st.sidebar.selectbox("Active Station", [
+    "Durg",
+    "Raipur",
+    "Bilaspur",
+    "Raigarh"
 ])
 
 st.sidebar.markdown('<div class="sidebar-section-title">Telemetry Stream Controls</div>', unsafe_allow_html=True)
@@ -528,8 +528,8 @@ latest = st.session_state.history[-1]
 prev = st.session_state.history[-2] if len(st.session_state.history) >= 2 else latest
 
 # Main Header
-st.markdown('<div class="brand-title">AWS Intelligent Anomaly Detection & Diagnostic System</div>', unsafe_allow_html=True)
-st.markdown('<div class="brand-subtitle">Physics-Guided Multi-Tier AI Engine • World Meteorological Organization (WMO-No. 8) Standards • TinyML Edge Ready</div>', unsafe_allow_html=True)
+st.markdown('<div class="brand-title">SkyGuard by Vyoma</div>', unsafe_allow_html=True)
+st.markdown('<div class="brand-subtitle">Automatic Weather Station (AWS) Intelligent Anomaly Detection & Diagnostics System • Physics-Guided AI • WMO-No. 8 Standards</div>', unsafe_allow_html=True)
 
 # Dynamic Hero Box for Recent Reading (Tint changes only for Hero Box)
 if latest["is_anomaly"]:
@@ -559,8 +559,6 @@ val_t = f"{latest['temperature']:.2f} °C" if not np.isnan(latest["temperature"]
 val_p = f"{latest['pressure']:.2f} hPa" if not np.isnan(latest["pressure"]) else "MISSING"
 val_rh = f"{latest['humidity']:.1f} %" if not np.isnan(latest["humidity"]) else "MISSING"
 
-td = latest["thermo"].get("dew_point_c", 0.0)
-dd = latest["thermo"].get("dew_point_depression_c", 0.0)
 st_rep = st.session_state.health_monitor.generate_station_report()
 
 hero_html = f"""
@@ -572,7 +570,7 @@ hero_html = f"""
             <div class="hero-status-desc">{status_detail}</div>
         </div>
         <div class="hero-meta-panel">
-            <div>Station: <span class="hero-meta-accent">AWS-IN-DELHI-04 (Safdarjung)</span></div>
+            <div>Station: <span class="hero-meta-accent">{selected_station}</span></div>
             <div>Timestamp: <span class="hero-meta-accent">{latest['timestamp'].strftime('%Y-%m-%d %H:%M:%S UTC')}</span></div>
             <div>Telemetry Frame: <span class="hero-meta-accent">Step #{latest['step']} (1m cycle)</span></div>
         </div>
@@ -594,29 +592,20 @@ hero_html = f"""
             <div class="hero-metric-tendency">Delta: {d_rh:+.1f} %/min</div>
         </div>
         <div class="hero-metric-tile">
-            <div class="hero-metric-caption">Dew Point (Td)</div>
-            <div class="hero-metric-number">{td:.1f} °C</div>
-            <div class="hero-metric-tendency">Depression: {dd:.1f} °C</div>
-        </div>
-        <div class="hero-metric-tile">
             <div class="hero-metric-caption">Station Health Index</div>
             <div class="hero-metric-number">{st_rep.overall_health:.1f}%</div>
             <div class="hero-metric-tendency">Status: {st_rep.station_status}</div>
         </div>
-    </div>
-    <div class="hero-footer-row">
-        <span class="hero-footer-label">AI Diagnostic Rationale:</span> &nbsp;{latest['explanation']}
     </div>
 </div>
 """
 st.markdown(hero_html, unsafe_allow_html=True)
 
 # Detailed Operations Tabs
-tab_telemetry, tab_xai, tab_health, tab_edge, tab_audit = st.tabs([
+tab_telemetry, tab_xai, tab_health, tab_audit = st.tabs([
     "Real-Time Telemetry & Detection",
-    "Explainable AI (XAI) Diagnostics",
+    "Explainable AI & Diagnostics",
     "Predictive Sensor Maintenance",
-    "Edge AI (ESP32) Architecture",
     "Incident Audit Log & Export"
 ])
 
@@ -727,7 +716,7 @@ with tab_telemetry:
     st.plotly_chart(fig, use_container_width=True)
 
 with tab_xai:
-    st.markdown("### Explainable AI (XAI) & Root-Cause Attribution")
+    st.markdown("### Explainable AI & Diagnostics")
     if len(st.session_state.anomaly_log) == 0:
         st.info("No anomalies logged yet. Use the Fault Injection Studio in the sidebar to simulate operational incidents.")
     else:
@@ -744,9 +733,8 @@ with tab_xai:
             st.markdown(f"**Classification:** `{target_event['anomaly_type']}`")
             st.markdown(f"**Target Component:** `{str(target_event['faulty_sensor']).upper()}`")
             st.markdown(f"**Model Confidence:** `{target_event['confidence']*100:.1f}%`")
-            st.info(f"**AI Diagnostic Rationale:**\n\n{target_event['explanation']}")
         with col_x2:
-            st.markdown("#### Feature Attribution (TreeSHAP Scores)")
+            st.markdown("#### Feature Attribution")
             feats = target_event.get("top_features", [])
             if feats:
                 fig_xai = go.Figure(go.Bar(
@@ -756,7 +744,7 @@ with tab_xai:
                     marker=dict(color='#3B82F6')
                 ))
                 fig_xai.update_layout(
-                    title="Top Feature Contributions to Decision",
+                    title="Top Feature Contributions",
                     height=300,
                     margin=dict(l=20, r=20, t=40, b=20),
                     paper_bgcolor="rgba(0,0,0,0)",
@@ -799,21 +787,6 @@ with tab_health:
             st.markdown(f"**Operational Status:** `{s_stat.status}`")
             st.info(f"**Maintenance Recommendation:**\n\n{s_stat.recommendation}")
 
-with tab_edge:
-    st.markdown("### Edge AI (ESP32) Microcontroller Deployment")
-    col_e1, col_e2 = st.columns([1, 1])
-    with col_e1:
-        st.table(pd.DataFrame({
-            "Specification Metric": ["Target Microcontroller", "CPU Core / Clock Speed", "Inference Latency", "SRAM Memory Footprint", "Bandwidth Reduction"],
-            "Edge Performance": ["ESP32 / ESP32-S3", "240 MHz Xtensa LX7", "< 0.08 ms per sample", "1.4 KB ring buffer", "Up to 95% telemetry savings"]
-        }))
-    with col_e2:
-        try:
-            with open("edge/esp32_anomaly_detector.h", "r") as f:
-                st.code(f.read()[:1500] + "\n\n// ... [Complete implementation in edge/esp32_anomaly_detector.h]", language="c")
-        except Exception:
-            st.code("// edge/esp32_anomaly_detector.h", language="c")
-
 with tab_audit:
     st.markdown("### Incident Audit Log & Telemetry Export")
     if len(st.session_state.anomaly_log) > 0:
@@ -840,6 +813,25 @@ with tab_audit:
             )
     else:
         st.info("No incidents recorded yet. Nominal observations are streaming.")
+
+# =============================================================================
+# Edge AI (ESP32) Microcontroller Deployment (Bottom of website)
+# =============================================================================
+st.markdown("---")
+st.markdown("### Edge AI (ESP32) Microcontroller Deployment")
+st.caption("TinyML Firmware Specification & Ultra-Low Latency Sensor Inference Engine")
+col_e1, col_e2 = st.columns([1, 1])
+with col_e1:
+    st.table(pd.DataFrame({
+        "Specification Metric": ["Target Microcontroller", "CPU Core / Clock Speed", "Inference Latency", "SRAM Memory Footprint", "Bandwidth Reduction"],
+        "Edge Performance": ["ESP32 / ESP32-S3", "240 MHz Xtensa LX7", "< 0.08 ms per sample", "1.4 KB ring buffer", "Up to 95% telemetry savings"]
+    }))
+with col_e2:
+    try:
+        with open("edge/esp32_anomaly_detector.h", "r") as f:
+            st.code(f.read()[:1500] + "\n\n// ... [Complete implementation in edge/esp32_anomaly_detector.h]", language="c")
+    except Exception:
+        st.code("// edge/esp32_anomaly_detector.h", language="c")
 
 # Auto refresh loop
 if st.session_state.is_streaming:
