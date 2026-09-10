@@ -95,35 +95,42 @@ class QualityControlEngine:
     def check_step_change(self, 
                           curr_temp: float, curr_pressure: float, curr_rh: float,
                           prev_temp: float, prev_pressure: float, prev_rh: float,
-                          delta_minutes: float = 1.0) -> Tuple[bool, str, str, float]:
+                          delta_minutes: float = 1.0,
+                          dt_temp: Optional[float] = None,
+                          dt_press: Optional[float] = None,
+                          dt_rh: Optional[float] = None) -> Tuple[bool, str, str, float]:
         """
         Check for impossible instant rate-of-change spikes across consecutive observations.
+        Supports per-parameter time deltas when recovering from past sensor faults.
         Returns: (passed, failed_param, reason, severity)
         """
-        dt_mins = max(1.0, delta_minutes)
-        d_temp = abs(curr_temp - prev_temp) / dt_mins
-        d_press = abs(curr_pressure - prev_pressure) / dt_mins
-        d_rh = abs(curr_rh - prev_rh) / dt_mins
+        dt_t = max(1.0, dt_temp if dt_temp is not None else delta_minutes)
+        dt_p = max(1.0, dt_press if dt_press is not None else delta_minutes)
+        dt_h = max(1.0, dt_rh if dt_rh is not None else delta_minutes)
+
+        d_temp = abs(curr_temp - prev_temp) / dt_t
+        d_press = abs(curr_pressure - prev_pressure) / dt_p
+        d_rh = abs(curr_rh - prev_rh) / dt_h
 
         if d_temp > self.limits.max_delta_temp_per_min:
             severity = min(1.0, 0.5 + (d_temp / self.limits.max_delta_temp_per_min) * 0.25)
             return False, "temperature", (
                 f"Impossible Temperature rate of change: {abs(curr_temp - prev_temp):.2f}°C "
-                f"in {delta_minutes:.1f} min (exceeds limit {self.limits.max_delta_temp_per_min * dt_mins:.1f}°C)"
+                f"in {dt_t:.1f} min (exceeds limit {self.limits.max_delta_temp_per_min * dt_t:.1f}°C)"
             ), severity
 
         if d_press > self.limits.max_delta_pressure_per_min:
             severity = min(1.0, 0.5 + (d_press / self.limits.max_delta_pressure_per_min) * 0.25)
             return False, "pressure", (
                 f"Impossible Pressure rate of change: {abs(curr_pressure - prev_pressure):.2f} hPa "
-                f"in {delta_minutes:.1f} min (exceeds limit {self.limits.max_delta_pressure_per_min * dt_mins:.1f} hPa)"
+                f"in {dt_p:.1f} min (exceeds limit {self.limits.max_delta_pressure_per_min * dt_p:.1f} hPa)"
             ), severity
 
         if d_rh > self.limits.max_delta_rh_per_min:
             severity = min(1.0, 0.5 + (d_rh / self.limits.max_delta_rh_per_min) * 0.25)
             return False, "humidity", (
                 f"Impossible Relative Humidity rate of change: {abs(curr_rh - prev_rh):.1f}% "
-                f"in {delta_minutes:.1f} min (exceeds limit {self.limits.max_delta_rh_per_min * dt_mins:.1f}%)"
+                f"in {dt_h:.1f} min (exceeds limit {self.limits.max_delta_rh_per_min * dt_h:.1f}%)"
             ), severity
 
         return True, "", "Rate of change within allowable limits", 0.0
@@ -255,7 +262,10 @@ class QualityControlEngine:
                              temp_hist: Optional[List[float]] = None,
                              press_hist: Optional[List[float]] = None,
                              rh_hist: Optional[List[float]] = None,
-                             delta_minutes: float = 1.0) -> QCResult:
+                             delta_minutes: float = 1.0,
+                             dt_temp: Optional[float] = None,
+                             dt_press: Optional[float] = None,
+                             dt_rh: Optional[float] = None) -> QCResult:
         """
         Executes all deterministic Quality Control checks in order of precedence:
         1. Range / Plausibility (Out of bounds or Missing)
@@ -281,7 +291,10 @@ class QualityControlEngine:
             ok, param, reason, sev = self.check_step_change(
                 curr_temp, curr_pressure, curr_rh,
                 prev_temp, prev_pressure, prev_rh,
-                delta_minutes
+                delta_minutes,
+                dt_temp=dt_temp,
+                dt_press=dt_press,
+                dt_rh=dt_rh
             )
             if not ok:
                 return QCResult(is_valid=False, is_anomaly=True, anomaly_type="SPIKE",

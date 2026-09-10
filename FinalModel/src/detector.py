@@ -69,6 +69,25 @@ class AWSAnomalyDetector:
         self.history_time: List[pd.Timestamp] = []
         self.max_history = 120
 
+        # Last valid reference state for step-rate calculations after transient faults
+        self.last_valid_temp: Optional[float] = None
+        self.last_valid_press: Optional[float] = None
+        self.last_valid_rh: Optional[float] = None
+        self.last_valid_time_temp: Optional[pd.Timestamp] = None
+        self.last_valid_time_press: Optional[pd.Timestamp] = None
+        self.last_valid_time_rh: Optional[pd.Timestamp] = None
+        self.prev_anomaly_type: Optional[str] = None
+        self.prev_faulty_sensor: Optional[str] = None
+
+        # Pre-weather event baseline for step-rate verification during post-storm recovery
+        self.last_pre_event_temp: Optional[float] = None
+        self.last_pre_event_press: Optional[float] = None
+        self.last_pre_event_rh: Optional[float] = None
+        self.last_pre_event_time_temp: Optional[pd.Timestamp] = None
+        self.last_pre_event_time_press: Optional[pd.Timestamp] = None
+        self.last_pre_event_time_rh: Optional[pd.Timestamp] = None
+        self.prev_is_weather_event: bool = False
+
     def fit(self, normal_df: pd.DataFrame):
         """
         Train the machine learning baseline on historical clean AWS observations.
@@ -93,6 +112,21 @@ class AWSAnomalyDetector:
         self.history_press.clear()
         self.history_rh.clear()
         self.history_time.clear()
+        self.last_valid_temp = None
+        self.last_valid_press = None
+        self.last_valid_rh = None
+        self.last_valid_time_temp = None
+        self.last_valid_time_press = None
+        self.last_valid_time_rh = None
+        self.prev_anomaly_type = None
+        self.prev_faulty_sensor = None
+        self.last_pre_event_temp = None
+        self.last_pre_event_press = None
+        self.last_pre_event_rh = None
+        self.last_pre_event_time_temp = None
+        self.last_pre_event_time_press = None
+        self.last_pre_event_time_rh = None
+        self.prev_is_weather_event = False
 
     def _update_history(self, t: float, p: float, rh: float, ts: pd.Timestamp):
         self.history_temp.append(t)
@@ -155,9 +189,17 @@ class AWSAnomalyDetector:
 
         # Drift is a subtle, gradual calibration deviation.
         # Active mesoscale weather events (thunderstorms, fronts) exhibit large dynamic swings
-        # (RH range > 7.0% or T range > 2.5°C over 40 min).
-        if (rh_win.max() - rh_win.min() > 7.0) or (t_win.max() - t_win.min() > 2.5):
+        # (RH range > 7.0%, T range > 2.5°C, or P range > 4.0 hPa over 40 min).
+        if (rh_win.max() - rh_win.min() > 7.0) or (t_win.max() - t_win.min() > 2.5) or (p_win.max() - p_win.min() > 4.0):
             return False, None, ""
+
+        # Abrupt step changes / spikes invalidate gradual linear drift estimation
+        limits = self.qc_engine.limits
+        if len(p_win) >= 2:
+            if (np.max(np.abs(np.diff(p_win))) >= limits.max_delta_pressure_per_min or
+                np.max(np.abs(np.diff(t_win))) >= limits.max_delta_temp_per_min or
+                np.max(np.abs(np.diff(rh_win))) >= limits.max_delta_rh_per_min):
+                return False, None, ""
 
         if w_len == 40:
             w = self.slope_w_40
@@ -211,6 +253,54 @@ class AWSAnomalyDetector:
 
         return False, None, ""
 
+    def _record_and_return(self, report: AnomalyReport) -> AnomalyReport:
+        """Update last valid reference points and previous anomaly state before returning report."""
+        if not report.is_anomaly:
+            if not report.is_weather_event:
+                # Nominal observation
+                self.last_valid_temp = report.temperature
+                self.last_valid_time_temp = report.timestamp
+                self.last_valid_press = report.pressure
+                self.last_valid_time_press = report.timestamp
+                self.last_valid_rh = report.humidity
+                self.last_valid_time_rh = report.timestamp
+                # Update pre-event nominal baselines
+                self.last_pre_event_temp = report.temperature
+                self.last_pre_event_time_temp = report.timestamp
+                self.last_pre_event_press = report.pressure
+                self.last_pre_event_time_press = report.timestamp
+                self.last_pre_event_rh = report.humidity
+                self.last_pre_event_time_rh = report.timestamp
+                self.prev_anomaly_type = None
+                self.prev_faulty_sensor = None
+                self.prev_is_weather_event = False
+            else:
+                # Genuine weather event: sensor is functioning properly, but atmosphere is perturbed.
+                # Keep last_pre_event_* anchored to pre-storm nominal values!
+                self.last_valid_temp = report.temperature
+                self.last_valid_time_temp = report.timestamp
+                self.last_valid_press = report.pressure
+                self.last_valid_time_press = report.timestamp
+                self.last_valid_rh = report.humidity
+                self.last_valid_time_rh = report.timestamp
+                self.prev_anomaly_type = "GENUINE_WEATHER_EVENT"
+                self.prev_faulty_sensor = None
+                self.prev_is_weather_event = True
+        else:
+            self.prev_anomaly_type = report.anomaly_type
+            self.prev_faulty_sensor = report.faulty_sensor
+            self.prev_is_weather_event = False
+            if report.faulty_sensor != 'temperature' and report.faulty_sensor not in ('multivariate', 'all'):
+                self.last_valid_temp = report.temperature
+                self.last_valid_time_temp = report.timestamp
+            if report.faulty_sensor != 'pressure' and report.faulty_sensor not in ('multivariate', 'all'):
+                self.last_valid_press = report.pressure
+                self.last_valid_time_press = report.timestamp
+            if report.faulty_sensor != 'humidity' and report.faulty_sensor not in ('multivariate', 'all'):
+                self.last_valid_rh = report.humidity
+                self.last_valid_time_rh = report.timestamp
+        return report
+
     def process_observation(self,
                             temperature: float,
                             pressure: float,
@@ -241,6 +331,51 @@ class AWSAnomalyDetector:
             if dt_seconds > 0:
                 delta_mins = dt_seconds / 60.0
 
+        dt_t = delta_mins
+        dt_p = delta_mins
+        dt_rh = delta_mins
+
+        # If previous observation was a transient sensor fault, evaluate rate of change
+        # against the last VALID observation for that sensor to prevent false return spikes.
+        if self.prev_anomaly_type in ('SPIKE', 'OUT_OF_BOUNDS', 'MISSING'):
+            if self.prev_faulty_sensor in ('temperature', 'multivariate', 'all') and self.last_valid_temp is not None:
+                prev_t = self.last_valid_temp
+                if self.last_valid_time_temp and timestamp:
+                    dt_t = max(1.0, (timestamp - self.last_valid_time_temp).total_seconds() / 60.0)
+            if self.prev_faulty_sensor in ('pressure', 'multivariate', 'all') and self.last_valid_press is not None:
+                prev_p = self.last_valid_press
+                if self.last_valid_time_press and timestamp:
+                    dt_p = max(1.0, (timestamp - self.last_valid_time_press).total_seconds() / 60.0)
+            if self.prev_faulty_sensor in ('humidity', 'multivariate', 'all') and self.last_valid_rh is not None:
+                prev_rh = self.last_valid_rh
+                if self.last_valid_time_rh and timestamp:
+                    dt_rh = max(1.0, (timestamp - self.last_valid_time_rh).total_seconds() / 60.0)
+
+        # If previous observation was a genuine weather event (e.g. convective storm / downburst),
+        # returning to normal diurnal baseline causes a sharp atmospheric rebound that looks like
+        # an impossible sensor spike. Check rate of change against pre-storm baseline to prevent false return spikes.
+        if self.prev_is_weather_event or self.prev_anomaly_type == 'GENUINE_WEATHER_EVENT':
+            if self.last_pre_event_temp is not None:
+                dt_pre_t = max(1.0, (timestamp - self.last_pre_event_time_temp).total_seconds() / 60.0) if (self.last_pre_event_time_temp and timestamp) else delta_mins
+                if prev_t is not None and (abs(temperature - prev_t) / dt_t) > self.qc_engine.limits.max_delta_temp_per_min:
+                    if (abs(temperature - self.last_pre_event_temp) / dt_pre_t) <= self.qc_engine.limits.max_delta_temp_per_min:
+                        prev_t = self.last_pre_event_temp
+                        dt_t = dt_pre_t
+
+            if self.last_pre_event_press is not None:
+                dt_pre_p = max(1.0, (timestamp - self.last_pre_event_time_press).total_seconds() / 60.0) if (self.last_pre_event_time_press and timestamp) else delta_mins
+                if prev_p is not None and (abs(pressure - prev_p) / dt_p) > self.qc_engine.limits.max_delta_pressure_per_min:
+                    if (abs(pressure - self.last_pre_event_press) / dt_pre_p) <= self.qc_engine.limits.max_delta_pressure_per_min:
+                        prev_p = self.last_pre_event_press
+                        dt_p = dt_pre_p
+
+            if self.last_pre_event_rh is not None:
+                dt_pre_rh = max(1.0, (timestamp - self.last_pre_event_time_rh).total_seconds() / 60.0) if (self.last_pre_event_time_rh and timestamp) else delta_mins
+                if prev_rh is not None and (abs(humidity - prev_rh) / dt_rh) > self.qc_engine.limits.max_delta_rh_per_min:
+                    if (abs(humidity - self.last_pre_event_rh) / dt_pre_rh) <= self.qc_engine.limits.max_delta_rh_per_min:
+                        prev_rh = self.last_pre_event_rh
+                        dt_rh = dt_pre_rh
+
         # Calculate parameter shifts over 30-min window
         lookback_idx = max(0, len(self.history_temp) - int(30 / max(1, delta_mins)))
         d_temp_30 = temperature - self.history_temp[lookback_idx] if self.history_temp else 0.0
@@ -263,7 +398,10 @@ class AWSAnomalyDetector:
             temp_hist=self.history_temp,
             press_hist=self.history_press,
             rh_hist=self.history_rh,
-            delta_minutes=delta_mins
+            delta_minutes=delta_mins,
+            dt_temp=dt_t,
+            dt_press=dt_p,
+            dt_rh=dt_rh
         )
 
         # Update history and feature buffer
@@ -275,7 +413,7 @@ class AWSAnomalyDetector:
             # If the step change test triggered, BUT the shift matches a genuine storm signature:
             # We override the sensor fault and report GENUINE_WEATHER_EVENT!
             if qc_res.anomaly_type == "SPIKE" and is_storm:
-                return AnomalyReport(
+                return self._record_and_return(AnomalyReport(
                     timestamp=timestamp,
                     temperature=temperature,
                     pressure=pressure,
@@ -289,11 +427,11 @@ class AWSAnomalyDetector:
                     explanation=f"Passed: Meteorological Phenomenon Detected. {storm_desc}",
                     top_features=[("convective_cooling", abs(d_temp_30)), ("humidity_surge", d_rh_30)],
                     thermodynamics=thermo
-                )
+                ))
 
             # Otherwise, genuine deterministic sensor failure!
             top_feats = self._compute_xai_contributions(feat_vec, compute_full_shap=compute_shap)
-            return AnomalyReport(
+            return self._record_and_return(AnomalyReport(
                 timestamp=timestamp,
                 temperature=temperature,
                 pressure=pressure,
@@ -307,11 +445,11 @@ class AWSAnomalyDetector:
                 explanation=f"Sensor Fault Detected [{qc_res.anomaly_type}]: {qc_res.reason}",
                 top_features=top_feats,
                 thermodynamics=thermo
-            )
+            ))
 
         # TIER 2 CHECK: Genuine Severe Meteorological Event (convective storm/cold front)
         if is_storm:
-            return AnomalyReport(
+            return self._record_and_return(AnomalyReport(
                 timestamp=timestamp,
                 temperature=temperature,
                 pressure=pressure,
@@ -325,13 +463,13 @@ class AWSAnomalyDetector:
                 explanation=f"Passed: Severe Meteorological Event Classified. {storm_desc}",
                 top_features=[("convective_cooling", abs(d_temp_30)), ("humidity_surge", d_rh_30)],
                 thermodynamics=thermo
-            )
+            ))
 
         # Check for slow sensor drift
         has_drift, drift_param, drift_msg = self._check_drift(temperature, pressure, humidity)
         if has_drift:
             top_feats = self._compute_xai_contributions(feat_vec, compute_full_shap=compute_shap)
-            return AnomalyReport(
+            return self._record_and_return(AnomalyReport(
                 timestamp=timestamp,
                 temperature=temperature,
                 pressure=pressure,
@@ -345,7 +483,7 @@ class AWSAnomalyDetector:
                 explanation=f"Sensor Fault Detected [SENSOR_DRIFT]: {drift_msg}",
                 top_features=top_feats,
                 thermodynamics=thermo
-            )
+            ))
 
         # TIER 3 & 4: Machine Learning Anomaly Detection
         if self.is_fitted:
@@ -362,7 +500,7 @@ class AWSAnomalyDetector:
             if is_ml_outlier:
                 # If ML flags an anomaly, check if it's explained by genuine storm physics
                 if is_storm:
-                    return AnomalyReport(
+                    return self._record_and_return(AnomalyReport(
                         timestamp=timestamp,
                         temperature=temperature,
                         pressure=pressure,
@@ -376,7 +514,7 @@ class AWSAnomalyDetector:
                         explanation=f"Passed: Severe Meteorological Event Classified. {storm_desc}",
                         top_features=[("convective_cooling", abs(d_temp_30)), ("humidity_surge", d_rh_30)],
                         thermodynamics=thermo
-                    )
+                    ))
 
                 # Determine most likely faulty parameter from feature z-scores
                 z_t = abs(feat_vec[22])
@@ -393,7 +531,7 @@ class AWSAnomalyDetector:
                 top_feats = self._compute_xai_contributions(feat_vec, compute_full_shap=compute_shap)
                 top_feat_str = ", ".join([f"{f[0]} ({f[1]:+.2f})" for f in top_feats[:2]])
 
-                return AnomalyReport(
+                return self._record_and_return(AnomalyReport(
                     timestamp=timestamp,
                     temperature=temperature,
                     pressure=pressure,
@@ -410,11 +548,11 @@ class AWSAnomalyDetector:
                     ),
                     top_features=top_feats,
                     thermodynamics=thermo
-                )
+                ))
 
         # If genuine weather event is active but not triggering any false alerts:
         if is_storm:
-            return AnomalyReport(
+            return self._record_and_return(AnomalyReport(
                 timestamp=timestamp,
                 temperature=temperature,
                 pressure=pressure,
@@ -428,10 +566,10 @@ class AWSAnomalyDetector:
                 explanation=f"Meteorological Event Active: {storm_desc}",
                 top_features=[("convective_cooling", abs(d_temp_30)), ("humidity_surge", d_rh_30)],
                 thermodynamics=thermo
-            )
+            ))
 
         # Clean Normal Observation
-        return AnomalyReport(
+        return self._record_and_return(AnomalyReport(
             timestamp=timestamp,
             temperature=temperature,
             pressure=pressure,
@@ -445,7 +583,7 @@ class AWSAnomalyDetector:
             explanation="Nominal atmospheric observation. Consistent with diurnal physics.",
             top_features=[],
             thermodynamics=thermo
-        )
+        ))
 
     def _sensor_min_std(self, sensor: str) -> float:
         limits = self.qc_engine.limits
@@ -562,15 +700,15 @@ class AWSAnomalyDetector:
 
     def apply_injection_edge_spike_filter(self, reports: List[AnomalyReport]) -> List[AnomalyReport]:
         """
-        Batch only: a calibration ramp or freeze that ends returns to the true
-        atmosphere in one sample and looks like a WMO spike. Live streaming
-        still flags that jump; dataset scoring should not.
+        Batch only: a calibration ramp, freeze, or genuine weather event that ends
+        returns to the true atmosphere in one sample and looks like a WMO spike.
+        Dataset scoring should not flag this post-event atmospheric rebound.
         """
         for i in range(1, len(reports)):
             if reports[i].anomaly_type != "SPIKE":
                 continue
             prev = reports[i - 1].anomaly_type
-            if prev in ("SENSOR_DRIFT", "STUCK_SENSOR"):
+            if prev in ("SENSOR_DRIFT", "STUCK_SENSOR", "GENUINE_WEATHER_EVENT") or reports[i - 1].is_weather_event:
                 self._revert_to_normal(reports[i])
         return reports
 

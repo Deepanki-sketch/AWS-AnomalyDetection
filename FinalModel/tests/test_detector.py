@@ -308,6 +308,72 @@ class TestQualityControlAndDetector(unittest.TestCase):
         # Live path never retroactively labels the start of the ramp.
         self.assertFalse(reports[40].is_anomaly)
 
+    def test_barometer_spike_recovery_returns_to_normal(self):
+        # When a single-sample barometer pressure drop occurs, it must be flagged as a SPIKE,
+        # and the immediate next step (+1m) returning to normal must be NORMAL (not SPIKE or SENSOR_DRIFT).
+        sim = AWSDataSimulator(seed=101)
+        det = AWSAnomalyDetector()
+        clean_hist = sim.generate_historical_dataset(days=2, interval_minutes=5, inject_anomalies=False)
+        det.fit(clean_hist)
+
+        base_time = pd.Timestamp("2026-06-01 12:00:00")
+        for i in range(30):
+            t, p, rh = sim.generate_point(base_time + pd.Timedelta(minutes=i))
+            det.process_observation(t, p, rh, base_time + pd.Timedelta(minutes=i))
+
+        # Injected Barometer Spike (-16.0 hPa)
+        t, p, rh = sim.generate_point(base_time + pd.Timedelta(minutes=30))
+        spike_rep = det.process_observation(t, p - 16.0, rh, base_time + pd.Timedelta(minutes=30))
+        self.assertTrue(spike_rep.is_anomaly)
+        self.assertEqual(spike_rep.anomaly_type, "SPIKE")
+        self.assertEqual(spike_rep.faulty_sensor, "pressure")
+
+        # Step +1 min (nominal observation)
+        t, p, rh = sim.generate_point(base_time + pd.Timedelta(minutes=31))
+        step1_rep = det.process_observation(t, p, rh, base_time + pd.Timedelta(minutes=31))
+        self.assertFalse(step1_rep.is_anomaly, msg=f"Expected NORMAL at +1m but got: {step1_rep.anomaly_type}, {step1_rep.explanation}")
+        self.assertEqual(step1_rep.anomaly_type, "NORMAL")
+
+        # Subsequent steps (+2m to +5m) must stay NORMAL
+        for i in range(2, 6):
+            t, p, rh = sim.generate_point(base_time + pd.Timedelta(minutes=30 + i))
+            rep = det.process_observation(t, p, rh, base_time + pd.Timedelta(minutes=30 + i))
+            self.assertFalse(rep.is_anomaly, msg=f"Expected NORMAL at +{i}m but got: {rep.anomaly_type}, {rep.explanation}")
+            self.assertEqual(rep.anomaly_type, "NORMAL")
+
+    def test_genuine_weather_event_recovery_returns_to_normal(self):
+        # When a genuine severe weather event occurs, it must be flagged as GENUINE_WEATHER_EVENT,
+        # and the immediate next step (+1m) returning to nominal diurnal atmosphere must be NORMAL (not false SPIKE).
+        sim = AWSDataSimulator(seed=101)
+        det = AWSAnomalyDetector()
+        clean_hist = sim.generate_historical_dataset(days=2, interval_minutes=5, inject_anomalies=False)
+        det.fit(clean_hist)
+
+        base_time = pd.Timestamp("2026-06-01 12:00:00")
+        for i in range(30):
+            t, p, rh = sim.generate_point(base_time + pd.Timedelta(minutes=i))
+            det.process_observation(t, p, rh, base_time + pd.Timedelta(minutes=i))
+
+        # Injected Genuine Weather Event at step 30
+        t, p, rh = sim.generate_point(base_time + pd.Timedelta(minutes=30))
+        storm_rep = det.process_observation(t - 6.2, p - 2.6, 97.5, base_time + pd.Timedelta(minutes=30))
+        self.assertFalse(storm_rep.is_anomaly)
+        self.assertTrue(storm_rep.is_weather_event)
+        self.assertEqual(storm_rep.anomaly_type, "GENUINE_WEATHER_EVENT")
+
+        # Step +1 min (nominal observation returning from weather event)
+        t, p, rh = sim.generate_point(base_time + pd.Timedelta(minutes=31))
+        step1_rep = det.process_observation(t, p, rh, base_time + pd.Timedelta(minutes=31))
+        self.assertFalse(step1_rep.is_anomaly, msg=f"Expected NORMAL at +1m but got: {step1_rep.anomaly_type}, {step1_rep.explanation}")
+        self.assertEqual(step1_rep.anomaly_type, "NORMAL")
+
+        # Subsequent steps (+2m to +5m) must stay NORMAL
+        for i in range(2, 6):
+            t, p, rh = sim.generate_point(base_time + pd.Timedelta(minutes=30 + i))
+            rep = det.process_observation(t, p, rh, base_time + pd.Timedelta(minutes=30 + i))
+            self.assertFalse(rep.is_anomaly, msg=f"Expected NORMAL at +{i}m but got: {rep.anomaly_type}, {rep.explanation}")
+            self.assertEqual(rep.anomaly_type, "NORMAL")
+
 
 if __name__ == '__main__':
     unittest.main()
