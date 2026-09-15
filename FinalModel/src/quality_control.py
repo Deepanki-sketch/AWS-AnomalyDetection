@@ -25,6 +25,11 @@ class QCLimits:
     max_delta_pressure_per_min: float = 1.5 # hPa/min
     max_delta_rh_per_min: float = 12.0      # %/min
 
+    # Maximum permissible step changes for 15-minute synoptic intervals (WMO-No. 8)
+    max_delta_temp_synoptic: float = 6.0    # deg C per 15-min
+    max_delta_pressure_synoptic: float = 4.0 # hPa per 15-min
+    max_delta_rh_synoptic: float = 25.0     # % per 15-min
+
     # Persistence / Flatline criteria
     min_stdev_window_len: int = 5           # Window length for variance check
     min_identical_run: int = 4              # Number of consecutive identical samples for rapid flatline check
@@ -108,29 +113,53 @@ class QualityControlEngine:
         dt_p = max(1.0, dt_press if dt_press is not None else delta_minutes)
         dt_h = max(1.0, dt_rh if dt_rh is not None else delta_minutes)
 
+        # Dynamic frequency adaptation:
+        # Rapid storm mode (dt <= 5.0m) allows high transient rates per minute.
+        # Synoptic routine mode (dt >= 15.0m) transitions smoothly to WMO-No. 8 integrated bounds.
+        if dt_t <= 5.0:
+            allowed_rate_t = self.limits.max_delta_temp_per_min
+        else:
+            synoptic_rate_t = self.limits.max_delta_temp_synoptic / 15.0
+            alpha = min(1.0, (dt_t - 5.0) / 10.0)
+            allowed_rate_t = (1.0 - alpha) * self.limits.max_delta_temp_per_min + alpha * synoptic_rate_t
+
+        if dt_p <= 5.0:
+            allowed_rate_p = self.limits.max_delta_pressure_per_min
+        else:
+            synoptic_rate_p = self.limits.max_delta_pressure_synoptic / 15.0
+            alpha = min(1.0, (dt_p - 5.0) / 10.0)
+            allowed_rate_p = (1.0 - alpha) * self.limits.max_delta_pressure_per_min + alpha * synoptic_rate_p
+
+        if dt_h <= 5.0:
+            allowed_rate_rh = self.limits.max_delta_rh_per_min
+        else:
+            synoptic_rate_rh = self.limits.max_delta_rh_synoptic / 15.0
+            alpha = min(1.0, (dt_h - 5.0) / 10.0)
+            allowed_rate_rh = (1.0 - alpha) * self.limits.max_delta_rh_per_min + alpha * synoptic_rate_rh
+
         d_temp = abs(curr_temp - prev_temp) / dt_t
         d_press = abs(curr_pressure - prev_pressure) / dt_p
         d_rh = abs(curr_rh - prev_rh) / dt_h
 
-        if d_temp > self.limits.max_delta_temp_per_min:
-            severity = min(1.0, 0.5 + (d_temp / self.limits.max_delta_temp_per_min) * 0.25)
+        if d_temp > allowed_rate_t:
+            severity = min(1.0, 0.5 + (d_temp / allowed_rate_t) * 0.25)
             return False, "temperature", (
                 f"Impossible Temperature rate of change: {abs(curr_temp - prev_temp):.2f}°C "
-                f"in {dt_t:.1f} min (exceeds limit {self.limits.max_delta_temp_per_min * dt_t:.1f}°C)"
+                f"in {dt_t:.1f} min (exceeds allowable limit {allowed_rate_t * dt_t:.1f}°C)"
             ), severity
 
-        if d_press > self.limits.max_delta_pressure_per_min:
-            severity = min(1.0, 0.5 + (d_press / self.limits.max_delta_pressure_per_min) * 0.25)
+        if d_press > allowed_rate_p:
+            severity = min(1.0, 0.5 + (d_press / allowed_rate_p) * 0.25)
             return False, "pressure", (
                 f"Impossible Pressure rate of change: {abs(curr_pressure - prev_pressure):.2f} hPa "
-                f"in {dt_p:.1f} min (exceeds limit {self.limits.max_delta_pressure_per_min * dt_p:.1f} hPa)"
+                f"in {dt_p:.1f} min (exceeds allowable limit {allowed_rate_p * dt_p:.1f} hPa)"
             ), severity
 
-        if d_rh > self.limits.max_delta_rh_per_min:
-            severity = min(1.0, 0.5 + (d_rh / self.limits.max_delta_rh_per_min) * 0.25)
+        if d_rh > allowed_rate_rh:
+            severity = min(1.0, 0.5 + (d_rh / allowed_rate_rh) * 0.25)
             return False, "humidity", (
                 f"Impossible Relative Humidity rate of change: {abs(curr_rh - prev_rh):.1f}% "
-                f"in {dt_h:.1f} min (exceeds limit {self.limits.max_delta_rh_per_min * dt_h:.1f}%)"
+                f"in {dt_h:.1f} min (exceeds allowable limit {allowed_rate_rh * dt_h:.1f}%)"
             ), severity
 
         return True, "", "Rate of change within allowable limits", 0.0

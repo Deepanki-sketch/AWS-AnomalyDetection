@@ -374,6 +374,31 @@ class TestQualityControlAndDetector(unittest.TestCase):
             self.assertFalse(rep.is_anomaly, msg=f"Expected NORMAL at +{i}m but got: {rep.anomaly_type}, {rep.explanation}")
             self.assertEqual(rep.anomaly_type, "NORMAL")
 
+    def test_fifteen_minute_synoptic_interval_handling(self):
+        """Verify detector handles 15-minute synoptic intervals with correct spike detection."""
+        sim = AWSDataSimulator(seed=101)
+        det = AWSAnomalyDetector()
+        clean_hist = sim.generate_historical_dataset(days=2, interval_minutes=15, inject_anomalies=False)
+        det.fit(clean_hist)
+
+        base_time = pd.Timestamp("2026-06-01 08:00:00")
+        for i in range(10):
+            t, p, rh = sim.generate_point(base_time + pd.Timedelta(minutes=i * 15))
+            rep = det.process_observation(t, p, rh, base_time + pd.Timedelta(minutes=i * 15))
+            self.assertFalse(rep.is_anomaly, msg=f"Expected NORMAL at step {i} (15m interval)")
+
+        # Inject +12.5 C spike at step 10
+        t, p, rh = sim.generate_point(base_time + pd.Timedelta(minutes=10 * 15))
+        spike_rep = det.process_observation(t + 12.5, p, rh, base_time + pd.Timedelta(minutes=10 * 15))
+        self.assertTrue(spike_rep.is_anomaly)
+        self.assertEqual(spike_rep.anomaly_type, "SPIKE")
+        self.assertEqual(spike_rep.faulty_sensor, "temperature")
+
+        # Step 11: return to normal observation at +15m
+        t, p, rh = sim.generate_point(base_time + pd.Timedelta(minutes=11 * 15))
+        rec_rep = det.process_observation(t, p, rh, base_time + pd.Timedelta(minutes=11 * 15))
+        self.assertFalse(rec_rep.is_anomaly, msg=f"Expected recovery to NORMAL at +15m but got {rec_rep.anomaly_type}")
+
 
 if __name__ == '__main__':
     unittest.main()

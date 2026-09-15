@@ -269,6 +269,58 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def load_and_normalize_aws_csv(file_or_path):
+    """
+    Intelligently maps and normalizes heterogeneous real AWS CSV datasets.
+    Handles variable headers (Temp, Temperature, TEMP_C, SLP, MSLP, Pressure, RH, Humidity, Date_Time, etc.)
+    """
+    if isinstance(file_or_path, str):
+        df_raw = pd.read_csv(file_or_path)
+    else:
+        df_raw = pd.read_csv(file_or_path)
+
+    col_map = {}
+    for col in df_raw.columns:
+        cl = str(col).lower().strip()
+        # Check timestamp first to avoid collision with temperature
+        if any(k in cl for k in ['timestamp', 'datetime', 'date_time', 'time', 'date']) and 'timestamp' not in col_map:
+            col_map['timestamp'] = col
+        elif any(k in cl for k in ['temperature', 'temp', 't_dry', 't_air']) and 'temperature' not in col_map:
+            col_map['temperature'] = col
+        elif any(k in cl for k in ['pressure', 'press', 'baro', 'mslp', 'slp']) and 'pressure' not in col_map:
+            col_map['pressure'] = col
+        elif any(k in cl for k in ['humidity', 'humid', 'rh']) and 'humidity' not in col_map:
+            col_map['humidity'] = col
+
+    # Fallback to check single-letter symbols
+    for col in df_raw.columns:
+        cl = str(col).lower().strip()
+        if cl in ['t', 'ta'] and 'temperature' not in col_map:
+            col_map['temperature'] = col
+        elif cl in ['p', 'pa'] and 'pressure' not in col_map:
+            col_map['pressure'] = col
+        elif cl in ['u', 'h'] and 'humidity' not in col_map:
+            col_map['humidity'] = col
+
+    cols = list(df_raw.columns)
+    t_col = col_map.get('temperature', cols[1] if len(cols) > 1 else cols[0])
+    p_col = col_map.get('pressure', cols[2] if len(cols) > 2 else cols[0])
+    rh_col = col_map.get('humidity', cols[3] if len(cols) > 3 else cols[0])
+
+    clean_df = pd.DataFrame()
+    if 'timestamp' in col_map:
+        clean_df['timestamp'] = pd.to_datetime(df_raw[col_map['timestamp']], errors='coerce')
+    else:
+        clean_df['timestamp'] = pd.date_range(end=pd.Timestamp.now(), periods=len(df_raw), freq='15min')
+
+    clean_df['temperature'] = pd.to_numeric(df_raw[t_col], errors='coerce')
+    clean_df['pressure'] = pd.to_numeric(df_raw[p_col], errors='coerce')
+    clean_df['humidity'] = pd.to_numeric(df_raw[rh_col], errors='coerce')
+
+    clean_df = clean_df.dropna(subset=['temperature', 'pressure', 'humidity']).reset_index(drop=True)
+    return clean_df
+
+
 # Initialize Session State
 if 'initialized' not in st.session_state:
     st.session_state.simulator = AWSDataSimulator(seed=101)
@@ -276,8 +328,8 @@ if 'initialized' not in st.session_state:
     st.session_state.imputer = AWSImputer()
     st.session_state.health_monitor = SensorHealthMonitor()
 
-    # Pre-train baseline on 2 days clean data
-    clean_hist = st.session_state.simulator.generate_historical_dataset(days=2, interval_minutes=5, inject_anomalies=False)
+    # Pre-train baseline on 2 days clean data (15-min synoptic interval)
+    clean_hist = st.session_state.simulator.generate_historical_dataset(days=2, interval_minutes=15, inject_anomalies=False)
     st.session_state.detector.fit(clean_hist)
 
     # Telemetry streaming buffer
@@ -289,17 +341,22 @@ if 'initialized' not in st.session_state:
     st.session_state.active_fault_param = None
     st.session_state.active_fault_value = 0.0
 
-    # Seed initial 30 observations so graphs start populated
-    base_time = pd.Timestamp.now() - pd.Timedelta(minutes=30)
+    # CSV streaming replay state
+    st.session_state.csv_stream_idx = 0
+    st.session_state.loaded_csv_df = None
+    st.session_state.active_csv_name = ""
+
+    # Seed initial 30 observations at 15-minute intervals
+    base_time = pd.Timestamp.now() - pd.Timedelta(minutes=30 * 15)
     for i in range(30):
-        t, p, rh = st.session_state.simulator.generate_point(base_time + pd.Timedelta(minutes=i))
-        rep = st.session_state.detector.process_observation(t, p, rh, base_time + pd.Timedelta(minutes=i))
+        t, p, rh = st.session_state.simulator.generate_point(base_time + pd.Timedelta(minutes=i * 15))
+        rep = st.session_state.detector.process_observation(t, p, rh, base_time + pd.Timedelta(minutes=i * 15))
         imp = st.session_state.imputer.impute_point(t, p, rh, None, i)
         st.session_state.imputer.update_clean_history(t, p, rh, i)
         st.session_state.health_monitor.record_observation(t, p, rh, None)
         st.session_state.history.append({
             "step": i,
-            "timestamp": base_time + pd.Timedelta(minutes=i),
+            "timestamp": base_time + pd.Timedelta(minutes=i * 15),
             "temperature": t, "pressure": p, "humidity": rh,
             "imp_temp": imp["imputed_temperature"], "imp_press": imp["imputed_pressure"], "imp_rh": imp["imputed_humidity"],
             "is_anomaly": False, "is_weather_event": False, "anomaly_type": "NORMAL", "confidence": 1.0,
@@ -320,9 +377,75 @@ selected_station = st.sidebar.selectbox("Active Station", [
     "Raigarh"
 ])
 
+st.sidebar.markdown('<div class="sidebar-section-title">Telemetry Data Source</div>', unsafe_allow_html=True)
+data_source_type = st.sidebar.radio(
+    "Ingestion Mode",
+    ["Simulated Diurnal Stream", "Real AWS Dataset Streamer (CSV Replay)"],
+    label_visibility="collapsed"
+)
+
+if data_source_type == "Real AWS Dataset Streamer (CSV Replay)":
+    csv_presets = {
+        "Upload Real Station CSV...": "CUSTOM",
+        "Benchmark Dataset (7,200 Observations)": "data/aws_benchmark_dataset.csv"
+    }
+    preset_choice = st.sidebar.selectbox("Select AWS Dataset", list(csv_presets.keys()))
+    csv_target = csv_presets[preset_choice]
+
+    if csv_target == "CUSTOM":
+        custom_file = st.sidebar.file_uploader("Upload Station CSV (Any standard AWS format)", type=["csv"])
+        if custom_file is not None:
+            if st.session_state.get("active_csv_name") != custom_file.name:
+                with st.spinner("Normalizing uploaded AWS CSV..."):
+                    df_loaded = load_and_normalize_aws_csv(custom_file)
+                    st.session_state.loaded_csv_df = df_loaded
+                    st.session_state.active_csv_name = custom_file.name
+                    st.session_state.csv_stream_idx = 0
+                    st.sidebar.success(f"Loaded {len(df_loaded)} valid records!")
+    else:
+        if st.session_state.get("active_csv_name") != csv_target:
+            if os.path.exists(csv_target):
+                with st.spinner(f"Loading {preset_choice}..."):
+                    df_loaded = load_and_normalize_aws_csv(csv_target)
+                    st.session_state.loaded_csv_df = df_loaded
+                    st.session_state.active_csv_name = csv_target
+                    st.session_state.csv_stream_idx = 0
+                    st.sidebar.success(f"Loaded {len(df_loaded)} rows from {os.path.basename(csv_target)}")
+
+    if st.session_state.loaded_csv_df is not None and len(st.session_state.loaded_csv_df) > 0:
+        total_rows = len(st.session_state.loaded_csv_df)
+        curr_idx = st.session_state.csv_stream_idx
+        progress_val = min(1.0, curr_idx / total_rows)
+        st.sidebar.progress(progress_val)
+        st.sidebar.caption(f"CSV Replay: Row {curr_idx} / {total_rows} ({progress_val*100:.1f}%)")
+        if st.sidebar.button("Reset CSV Replay", use_container_width=True):
+            st.session_state.csv_stream_idx = 0
+            st.sidebar.info("Replay reset to row 0.")
+
+st.sidebar.markdown('<div class="sidebar-section-title">Interval & Frequency Mode</div>', unsafe_allow_html=True)
+freq_mode = st.sidebar.selectbox("Sampling Frequency", [
+    "Adaptive (Auto-Detect: 1m Storm / 15m Routine)",
+    "15-Minute Synoptic (Standard IMD Routine)",
+    "1-Minute Rapid (Convective Storm Mode)"
+])
+
+# Dynamic interval resolution
+latest_hist_rec = st.session_state.history[-1] if st.session_state.history else None
+is_storm_condition = (
+    (latest_hist_rec and latest_hist_rec.get("is_weather_event", False))
+    or (st.session_state.active_fault == "GENUINE_WEATHER_EVENT")
+)
+
+if "Adaptive" in freq_mode:
+    active_interval_mins = 1 if is_storm_condition else 15
+elif "1-Minute" in freq_mode:
+    active_interval_mins = 1
+else:
+    active_interval_mins = 15
+
 st.sidebar.markdown('<div class="sidebar-section-title">Telemetry Stream Controls</div>', unsafe_allow_html=True)
 col_s1, col_s2 = st.sidebar.columns(2)
-if col_s1.button("Step (+1m)", use_container_width=True):
+if col_s1.button(f"Step (+{active_interval_mins}m)", use_container_width=True):
     st.session_state.step_once = True
 else:
     st.session_state.step_once = False
@@ -331,7 +454,7 @@ stream_toggle = col_s2.button("Toggle Stream", use_container_width=True)
 if stream_toggle:
     st.session_state.is_streaming = not st.session_state.is_streaming
 
-speed = st.sidebar.slider("Stream Interval (seconds)", 0.2, 2.0, 0.6, 0.1)
+speed = st.sidebar.slider("Stream Speed (seconds/step)", 0.2, 2.0, 0.6, 0.1)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown('<div class="sidebar-section-title">Fault Injection Studio</div>', unsafe_allow_html=True)
@@ -418,11 +541,31 @@ if st.sidebar.button("Trigger Selected Scenario", use_container_width=True):
         if not st.session_state.is_streaming:
             st.session_state.step_once = True
 
-def process_next_step():
+def process_next_step(interval_mins=15):
     st.session_state.stream_step += 1
     step = st.session_state.stream_step
-    curr_time = st.session_state.history[-1]["timestamp"] + pd.Timedelta(minutes=1)
-    t, p, rh = st.session_state.simulator.generate_point(curr_time)
+
+    is_csv_active = (
+        data_source_type == "Real AWS Dataset Streamer (CSV Replay)"
+        and st.session_state.loaded_csv_df is not None
+        and len(st.session_state.loaded_csv_df) > 0
+    )
+
+    if is_csv_active:
+        df_src = st.session_state.loaded_csv_df
+        idx = st.session_state.csv_stream_idx % len(df_src)
+        row = df_src.iloc[idx]
+        t = float(row["temperature"])
+        p = float(row["pressure"])
+        rh = float(row["humidity"])
+        if pd.notna(row["timestamp"]):
+            curr_time = row["timestamp"]
+        else:
+            curr_time = st.session_state.history[-1]["timestamp"] + pd.Timedelta(minutes=interval_mins)
+        st.session_state.csv_stream_idx += 1
+    else:
+        curr_time = st.session_state.history[-1]["timestamp"] + pd.Timedelta(minutes=interval_mins)
+        t, p, rh = st.session_state.simulator.generate_point(curr_time)
 
     # Apply injected fault if active
     fault = st.session_state.active_fault
@@ -448,18 +591,19 @@ def process_next_step():
             rh = st.session_state.active_fault_value
 
     elif fault == "SENSOR_DRIFT":
+        drift_rate = 0.04 if interval_mins <= 2 else 0.15
         if param == "temperature":
-            st.session_state.active_fault_value += 0.04
+            st.session_state.active_fault_value += drift_rate
             t += st.session_state.active_fault_value
         elif param == "humidity":
-            st.session_state.active_fault_value += 0.10
+            st.session_state.active_fault_value += (drift_rate * 2.5)
             rh = min(100.0, max(0.0, rh + st.session_state.active_fault_value))
         elif param == "pressure":
-            st.session_state.active_fault_value += 0.03
+            st.session_state.active_fault_value += (drift_rate * 0.75)
             p += st.session_state.active_fault_value
 
     elif fault == "GENUINE_WEATHER_EVENT":
-        # Severe Thunderstorm: sharp temperature drop (-6.2 C), pressure nose, RH near saturation (98%)
+        # Severe Thunderstorm: sharp temperature drop (-6.2 C), pressure nose, RH near saturation (97.5%)
         t -= 6.2
         p -= 2.6
         rh = 97.5
@@ -521,7 +665,7 @@ def process_next_step():
 
 # Step execution
 if st.session_state.step_once:
-    process_next_step()
+    process_next_step(interval_mins=active_interval_mins)
     st.session_state.step_once = False
 
 latest = st.session_state.history[-1]
@@ -561,6 +705,8 @@ val_rh = f"{latest['humidity']:.1f} %" if not np.isnan(latest["humidity"]) else 
 
 st_rep = st.session_state.health_monitor.generate_station_report()
 
+frame_desc = f"{active_interval_mins}m interval • {'Storm Rapid' if latest['is_weather_event'] else 'Synoptic Routine'}"
+
 hero_html = f"""
 <div class="hero-container {tint_class}">
     <div class="hero-top-row">
@@ -572,30 +718,33 @@ hero_html = f"""
         <div class="hero-meta-panel">
             <div>Station: <span class="hero-meta-accent">{selected_station}</span></div>
             <div>Timestamp: <span class="hero-meta-accent">{latest['timestamp'].strftime('%Y-%m-%d %H:%M:%S UTC')}</span></div>
-            <div>Telemetry Frame: <span class="hero-meta-accent">Step #{latest['step']} (1m cycle)</span></div>
+            <div>Telemetry Frame: <span class="hero-meta-accent">Step #{latest['step']} ({frame_desc})</span></div>
         </div>
     </div>
     <div class="hero-metrics-grid">
         <div class="hero-metric-tile">
             <div class="hero-metric-caption">Temperature</div>
             <div class="hero-metric-number">{val_t}</div>
-            <div class="hero-metric-tendency">Delta: {d_t:+.2f} °C/min</div>
+            <div class="hero-metric-tendency">Delta: {d_t:+.2f} °C / {active_interval_mins}m</div>
         </div>
         <div class="hero-metric-tile">
             <div class="hero-metric-caption">Atmospheric Pressure</div>
             <div class="hero-metric-number">{val_p}</div>
-            <div class="hero-metric-tendency">Delta: {d_p:+.2f} hPa/min</div>
+            <div class="hero-metric-tendency">Delta: {d_p:+.2f} hPa / {active_interval_mins}m</div>
         </div>
         <div class="hero-metric-tile">
             <div class="hero-metric-caption">Relative Humidity</div>
             <div class="hero-metric-number">{val_rh}</div>
-            <div class="hero-metric-tendency">Delta: {d_rh:+.1f} %/min</div>
+            <div class="hero-metric-tendency">Delta: {d_rh:+.1f} % / {active_interval_mins}m</div>
         </div>
         <div class="hero-metric-tile">
             <div class="hero-metric-caption">Station Health Index</div>
             <div class="hero-metric-number">{st_rep.overall_health:.1f}%</div>
             <div class="hero-metric-tendency">Status: {st_rep.station_status}</div>
         </div>
+    </div>
+    <div class="hero-footer-row">
+        <span class="hero-footer-label">AI Diagnostic Rationale:</span> &nbsp;{latest['explanation']}
     </div>
 </div>
 """
@@ -604,7 +753,7 @@ st.markdown(hero_html, unsafe_allow_html=True)
 # Detailed Operations Tabs
 tab_telemetry, tab_xai, tab_health, tab_audit = st.tabs([
     "Real-Time Telemetry & Detection",
-    "Explainable AI & Diagnostics",
+    "Explainable AI (TreeSHAP) & Diagnostics",
     "Predictive Sensor Maintenance",
     "Incident Audit Log & Export"
 ])
@@ -716,9 +865,9 @@ with tab_telemetry:
     st.plotly_chart(fig, use_container_width=True)
 
 with tab_xai:
-    st.markdown("### Explainable AI & Diagnostics")
+    st.markdown("### Explainable AI (TreeSHAP) & Root-Cause Diagnostics")
     if len(st.session_state.anomaly_log) == 0:
-        st.info("No anomalies logged yet. Use the Fault Injection Studio in the sidebar to simulate operational incidents.")
+        st.info("No anomalies logged yet. Use the Fault Injection Studio or Real CSV Streamer in the sidebar to simulate operational incidents.")
     else:
         log_options = [
             f"Step #{r['step']} | {r['timestamp'].strftime('%H:%M:%S UTC')} | {r['anomaly_type']} | {r['faulty_sensor'] or 'Atmospheric Event'}"
@@ -733,8 +882,9 @@ with tab_xai:
             st.markdown(f"**Classification:** `{target_event['anomaly_type']}`")
             st.markdown(f"**Target Component:** `{str(target_event['faulty_sensor']).upper()}`")
             st.markdown(f"**Model Confidence:** `{target_event['confidence']*100:.1f}%`")
+            st.info(f"**AI Diagnostic Rationale:**\n\n{target_event['explanation']}")
         with col_x2:
-            st.markdown("#### Feature Attribution")
+            st.markdown("#### Feature Attribution (TreeSHAP Scores)")
             feats = target_event.get("top_features", [])
             if feats:
                 fig_xai = go.Figure(go.Bar(
@@ -744,7 +894,7 @@ with tab_xai:
                     marker=dict(color='#3B82F6')
                 ))
                 fig_xai.update_layout(
-                    title="Top Feature Contributions",
+                    title="TreeSHAP Feature Contributions to Decision",
                     height=300,
                     margin=dict(l=20, r=20, t=40, b=20),
                     paper_bgcolor="rgba(0,0,0,0)",
@@ -836,5 +986,5 @@ with col_e2:
 # Auto refresh loop
 if st.session_state.is_streaming:
     time.sleep(speed)
-    process_next_step()
+    process_next_step(interval_mins=active_interval_mins)
     st.rerun()

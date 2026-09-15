@@ -59,10 +59,11 @@ typedef struct {
     float press_max;            /* 1085.0 hPa */
     float rh_min;               /* 0.0 % */
     float rh_max;               /* 100.0 % */
-    float max_delta_temp;       /* 3.0 C per sample */
-    float max_delta_press;      /* 2.0 hPa per sample */
-    float max_delta_rh;         /* 15.0 % per sample */
+    float max_delta_temp;       /* Rate limit per interval (e.g. 6.0 C / 15m, 2.5 C / 1m) */
+    float max_delta_press;      /* 4.0 hPa / 15m, 1.8 hPa / 1m */
+    float max_delta_rh;         /* 25.0 % / 15m, 15.0 % / 1m */
     float min_stdev_flatline;   /* 0.005 minimum variance */
+    uint8_t interval_minutes;   /* 15 (routine synoptic) or 1 (rapid storm) */
 } aws_edge_config_t;
 
 /* Detector runtime state struct */
@@ -73,7 +74,28 @@ typedef struct {
     float rh_buf[AWS_EDGE_HISTORY_LEN];
     uint8_t count;
     uint8_t head;
+    bool in_storm_mode;             /* True when operating in rapid 1-minute storm mode */
+    uint8_t stable_cooldown_count;  /* Consecutive quiet 1-minute samples required to confirm storm is over */
 } aws_edge_detector_t;
+
+/**
+ * @brief Configure sampling interval and adaptive WMO rate thresholds.
+ * @param interval_minutes 15 for routine synoptic mode, 1 for rapid storm mode.
+ */
+static inline void aws_edge_set_interval(aws_edge_detector_t* det, uint8_t interval_minutes) {
+    det->config.interval_minutes = interval_minutes;
+    if (interval_minutes <= 2) {
+        /* High-frequency storm mode (1-minute) */
+        det->config.max_delta_temp = 2.5f;
+        det->config.max_delta_press = 1.8f;
+        det->config.max_delta_rh = 15.0f;
+    } else {
+        /* Routine synoptic mode (15-minute) */
+        det->config.max_delta_temp = 6.0f;
+        det->config.max_delta_press = 4.0f;
+        det->config.max_delta_rh = 25.0f;
+    }
+}
 
 /**
  * @brief Initialize edge detector with default meteorological limits.
@@ -85,13 +107,13 @@ static inline void aws_edge_init(aws_edge_detector_t* det) {
     det->config.press_max = 1085.0f;
     det->config.rh_min = 0.0f;
     det->config.rh_max = 100.0f;
-    det->config.max_delta_temp = 3.0f;
-    det->config.max_delta_press = 2.0f;
-    det->config.max_delta_rh = 15.0f;
     det->config.min_stdev_flatline = 0.005f;
+    aws_edge_set_interval(det, 15); /* Default to 15-minute synoptic routine */
 
     det->count = 0;
     det->head = 0;
+    det->in_storm_mode = false;
+    det->stable_cooldown_count = 0;
 }
 
 /**
@@ -190,8 +212,29 @@ static inline aws_detection_result_t aws_edge_process(
             res.is_anomaly = false; /* Healthy sensor, real storm! */
             res.confidence = 0.95f;
             res.message = "Convective Thunderstorm / Downdraft Signature detected";
+            det->in_storm_mode = true;
+            det->stable_cooldown_count = 0; /* Reset cooldown timer on active storm pulse */
+            aws_edge_set_interval(det, 1);  /* Switch to 1-minute high-frequency storm mode */
         }
         else {
+            /* If operating in rapid storm mode, test for atmospheric stabilization (storm over) */
+            if (det->in_storm_mode) {
+                /* Check if atmosphere has ceased rapid fluctuation (calm/settled) */
+                if (fabsf(dt) <= 0.4f && fabsf(dp) <= 0.3f && fabsf(drh) <= 2.5f) {
+                    det->stable_cooldown_count++;
+                    if (det->stable_cooldown_count >= 15) {
+                        /* 15 consecutive minutes of calm confirmed storm has fully dissipated */
+                        det->in_storm_mode = false;
+                        det->stable_cooldown_count = 0;
+                        aws_edge_set_interval(det, 15); /* Revert back to standard 15-minute synoptic mode */
+                        res.message = "Storm Over: Atmosphere stabilized for 15m; reverted to 15-min synoptic mode";
+                    }
+                } else {
+                    /* Secondary squall or turbulence detected - reset stabilization counter */
+                    det->stable_cooldown_count = 0;
+                }
+            }
+
             /* Check rate of change spike */
             if (fabsf(dt) > det->config.max_delta_temp) {
                 res.status = AWS_STATUS_ERR_SPIKE;
